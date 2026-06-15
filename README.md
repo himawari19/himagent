@@ -1,6 +1,6 @@
 # Himagent - Automated Test Plan Generation
 
-This project generates comprehensive, structured Excel-based test plans (`.xlsx` files) and self-contained Python scripts for web application modules.
+This project generates comprehensive, structured Excel-based test plans (`.xlsx` files) from the Flask web application.
 
 ## Prerequisites
 
@@ -23,22 +23,8 @@ Open your web browser and navigate to:
 http://localhost:5000
 ```
 
-### 2. Standalone Test Plan Generators
-To run the pre-built generators directly and output the styled `.xlsx` spreadsheets:
-
-```bash
-# Create Project Module
-python testplan_createProject.py
-
-# AI Image Generator Module
-python testplan_imageGen.py
-
-# AI Video Generator Module
-python testplan_videoGen.py
-```
+### 2. Generate Test Plans
+Use the web application to generate and download test plan spreadsheets. Python recreate scripts are optional and off by default.
 
 ## Generated Artifacts
-Running the scripts above will generate the following Excel spreadsheets in the root directory:
-* `testplan_createProject.xlsx`
-* `testplan_imageGen.xlsx`
-* `testplan_videoGen.xlsx`
+Generated files are saved under the `outputs/` directory, grouped by module.

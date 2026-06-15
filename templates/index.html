@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Himagent — Local Test Plan Generator</title>
+    <title>Himagent - Local Test Plan Generator</title>
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -18,6 +18,36 @@
     />
     <!-- Custom Style Sheet -->
     <link rel="stylesheet" href="/static/style.css?v=1781522016" />
+    <style>
+      .instructions-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+
+      .instructions-label {
+        margin-bottom: 0;
+      }
+
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .toast-container {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        z-index: 99999;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        max-width: 420px;
+        pointer-events: none;
+      }
+    </style>
   </head>
 
   <body>
@@ -30,13 +60,11 @@
       <header class="app-header">
         <div class="logo-area">
           <i class="fa-solid fa-wand-magic-sparkles logo-icon"></i>
-          <span class="logo-text">HIM<span class="accent-text">AGENT</span></span>
+          <span class="logo-text"
+            >HIM<span class="accent-text">AGENT</span></span
+          >
         </div>
-        <div style="display: flex; align-items: center; gap: 12px">
-          <a href="/dashboard" class="header-nav-link">
-            <i class="fa-solid fa-chart-bar"></i>
-            <span>Dashboard</span>
-          </a>
+        <div class="header-actions">
           <div class="badge-status">
             <span class="status-indicator online"></span>
             <span>Local Engine Active</span>
@@ -49,8 +77,9 @@
         <section class="hero-section">
           <h1 class="hero-title">Automated Test Plan Generator</h1>
           <p class="hero-subtitle">
-            Upload any SUT screenshot to generate complete Excel test plans
-            and element matrices locally using Gemini.
+            Upload one or more SUT screenshots to generate complete Excel test
+            plans and optional recreate scripts locally with your selected AI
+            provider.
           </p>
         </section>
 
@@ -66,40 +95,39 @@
               <li>
                 <i class="fa-solid fa-check"></i>
                 <div>
-                  <strong>Standard 2-Sheet Excel Format:</strong>
+                  <strong>Current Workbook Format:</strong>
+                  <p>Produces a TEST PLAN sheet and a SUMMARY sheet for each run.</p>
+                </div>
+              </li>
+              <li>
+                <i class="fa-solid fa-check"></i>
+                <div>
+                  <strong>Exhaustive QA Coverage:</strong>
                   <p>
-                    Produces sheets: TEST PLAN and SUMMARY.
+                    Covers functional checks, boundary values, security attacks,
+                    performance edge cases, accessibility (WCAG), responsive
+                    layouts, and localization edge cases.
                   </p>
                 </div>
               </li>
               <li>
                 <i class="fa-solid fa-check"></i>
                 <div>
-                  <strong>Exhaustive QA Scenarios:</strong>
+                  <strong>Dynamic Metrics & Styling:</strong>
                   <p>
-                    Covers functional checks, boundary values, security attacks, performance edge cases, accessibility (WCAG), and responsive layouts.
+                    Includes live summary counts, workbook metrics, blue
+                    headers, and conditional colors for pass/fail and case
+                    type labels.
                   </p>
                 </div>
               </li>
               <li>
                 <i class="fa-solid fa-check"></i>
                 <div>
-                  <strong>Formulas & Styling:</strong>
+                  <strong>Optional Recreate Script:</strong>
                   <p>
-                    Includes dynamic Excel counts (COUNTIF, SUM) and standard
-                    colors (blue headers, conditional colors for
-                    Pass/Fail/Positive/Negative).
-                  </p>
-                </div>
-              </li>
-              <li>
-                <i class="fa-solid fa-check"></i>
-                <div>
-                  <strong>Python Script:</strong>
-                  <p>
-                    Saves a `.py` script that contains all generated test cases
-                    inside lists of tuples, capable of re-building the
-                    spreadsheet.
+                    Can save a `.py` recreate script when requested, but the
+                    fast path now focuses on the Excel workbook.
                   </p>
                 </div>
               </li>
@@ -144,12 +172,35 @@
                 <i class="fa-solid fa-circle-check"></i>
               </div>
               <h2 class="success-title">Generation Successful!</h2>
-              <p class="success-subtitle">
-                Your Excel workbook and Python script are ready.
-              </p>
+              <p class="success-subtitle">Your workbook and download files are ready.</p>
             </div>
 
-            <div class="metrics-grid" style="grid-template-columns: repeat(2, 1fr);">
+            <!-- Local style moved from inline to avoid inline-styles warning -->
+            <style>
+              /* Scoped style for this metrics grid */
+              .metrics-grid.two-columns {
+                grid-template-columns: repeat(2, 1fr);
+              }
+              .hidden {
+                display: none;
+              }
+              .btn-secondary {
+                background: rgba(99, 102, 241, 0.12);
+                color: #4f46e5;
+                border: 1px solid rgba(99, 102, 241, 0.3);
+                box-shadow: none;
+              }
+              .api-key-row {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 8px;
+              }
+              .api-key-row label {
+                margin-bottom: 0;
+              }
+            </style>
+            <div class="metrics-grid two-columns">
               <div class="metric-card">
                 <span class="metric-num" id="statCases">-</span>
                 <span class="metric-label">Test Cases</span>
@@ -167,16 +218,16 @@
                   <span class="file-name" id="xlsxFilename"
                     >testplan_custom.xlsx</span
                   >
-                  <span class="file-dir">Saved locally in d:\QODER\</span>
+                  <span class="file-dir">Saved locally in outputs/</span>
                 </div>
               </div>
-              <div class="file-item">
+              <div class="file-item hidden" id="pyFileRow">
                 <i class="fa-solid fa-file-code file-icon python"></i>
                 <div class="file-info">
                   <span class="file-name" id="pyFilename"
                     >testplan_custom.py</span
                   >
-                  <span class="file-dir">Saved locally in d:\QODER\</span>
+                  <span class="file-dir">Saved locally in outputs/</span>
                 </div>
               </div>
             </div>
@@ -184,18 +235,13 @@
             <div class="result-actions">
               <a id="downloadBtn" href="#" class="btn-success">
                 <i class="fa-solid fa-circle-arrow-down btn-icon"></i>
-                <span>Download Excel File</span>
+                <span>Download Workbook</span>
               </a>
               <a
                 id="downloadPyBtn"
                 href="#"
-                class="btn-success"
-                style="
-                  background: rgba(99, 102, 241, 0.12);
-                  color: #4f46e5;
-                  border: 1px solid rgba(99, 102, 241, 0.3);
-                  box-shadow: none;
-                "
+                class="btn-success btn-secondary hidden"
+                aria-hidden="true"
               >
                 <i class="fa-solid fa-file-code btn-icon"></i>
                 <span>Download Script</span>
@@ -248,22 +294,9 @@
 
             <!-- API Key / Token input -->
             <div class="form-group">
-              <div
-                style="
-                  display: flex;
-                  justify-content: space-between;
-                  align-items: center;
-                  margin-bottom: 8px;
-                "
-              >
-                <label for="api_key" id="api_key_label" style="margin-bottom: 0"
-                  >Gemini API Key</label
-                >
-                <span
-                  id="apiKeyStatus"
-                  class="api-key-status"
-                  style="display: none"
-                ></span>
+              <div class="api-key-row">
+                <label for="api_key" id="api_key_label">Gemini API Key</label>
+                <span id="apiKeyStatus" class="api-key-status"></span>
               </div>
               <div class="input-wrapper">
                 <i class="fa-solid fa-key field-icon"></i>
@@ -321,22 +354,34 @@
                 <div class="input-wrapper">
                   <i class="fa-solid fa-sliders field-icon"></i>
                   <select id="gen_depth" name="gen_depth">
-                    <option value="fast" selected>⚡ Fast Mode (15-20 test cases - fast response)</option>
-                    <option value="exhaustive">🔍 Exhaustive Mode (50-80 test cases - detailed response)</option>
+                    <option value="fast" selected>
+                      ⚡ Fast Mode (10-15 test cases - fast response)
+                    </option>
+                    <option value="ultra">
+                      🚀 Ultra Fast Mode (5-8 test cases - quickest response)
+                    </option>
+                    <option value="exhaustive">
+                      🔍 Exhaustive Mode (50-80 test cases - detailed response)
+                    </option>
                   </select>
                 </div>
               </div>
             </div>
+            <div class="form-row">
+              <div class="form-group half-width">
+                <label class="checkbox-label" for="generate_script">
+                  <input
+                    type="checkbox"
+                    id="generate_script"
+                    name="generate_script"
+                  />
+                  Generate Recreate Script
+                </label>
+              </div>
+            </div>
             <div class="form-group" id="instructionsGroup">
-              <div
-                style="
-                  display: flex;
-                  justify-content: space-between;
-                  align-items: center;
-                  margin-bottom: 8px;
-                "
-              >
-                <label for="instructions" style="margin-bottom: 0"
+              <div class="instructions-header">
+                <label for="instructions" class="instructions-label"
                   >Custom Instructions / Context (Preset-Driven)</label
                 >
                 <button
@@ -494,7 +539,7 @@
             </button>
           </h2>
           <p class="library-subtitle">
-            Browse and preview all generated Excel test plans and Python
+            Browse and preview generated Excel test plans and any optional
             recreate scripts saved in the local <code>outputs/</code> folder.
           </p>
 
@@ -508,13 +553,11 @@
             </div>
           </div>
         </div>
-
       </main>
 
       <footer class="app-footer">
         <p>
-          Himagent Automated QA Suite — Designed for Vania Volare Creative
-          Platforms
+          Himagent Automated QA Suite
         </p>
       </footer>
     </div>
@@ -528,7 +571,7 @@
             <i class="fa-solid fa-wand-magic-sparkles magic-icon-spinner"></i>
           </div>
           <h3 id="loaderTitle">Generating Test Plan</h3>
-          <p id="loaderSubtitle" style="display: none"></p>
+          <p id="loaderSubtitle" class="hidden"></p>
         </div>
 
         <!-- Modern Stepper Indicator -->
@@ -567,6 +610,13 @@
     </div>
 
     <!-- File Preview Modal -->
+    <style>
+      .btn-preview-action.save {
+        background: rgba(34, 197, 94, 0.12);
+        color: #22c55e;
+        border: 1px solid rgba(34, 197, 94, 0.3);
+      }
+    </style>
     <div id="previewModal" class="modal-overlay hidden">
       <div class="modal-content preview-content">
         <div class="preview-header">
@@ -587,8 +637,8 @@
             </button>
             <button
               id="previewSaveBtn"
+              type="button"
               class="btn-preview-action save hidden"
-              style="background: rgba(34, 197, 94, 0.12); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.3);"
               title="Save changes to Excel"
             >
               <i class="fa-solid fa-floppy-disk"></i> <span>Save Changes</span>
@@ -684,19 +734,6 @@
 
     <script src="/static/app.js?v=1781522016"></script>
     <!-- Toast Notification Container -->
-    <div
-      id="toastContainer"
-      style="
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        z-index: 99999;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        max-width: 420px;
-        pointer-events: none;
-      "
-    ></div>
+    <div id="toastContainer" class="toast-container"></div>
   </body>
 </html>

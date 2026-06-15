@@ -15,12 +15,8 @@ d:\Himagent\
 ├── static/
 │   ├── style.css                      # Local app glassmorphic styles
 │   └── app.js                         # Local app interactive script
-├── testplan_createProject.py          # Script: Create Project test plan
-├── testplan_imageGen.py               # Script: AI Image Generator test plan
-├── testplan_videoGen.py               # Script: AI Video Generator test plan
-├── testplan_createProject.xlsx        # Output: Create Project test plan
-├── testplan_imageGen.xlsx             # Output: AI Image Generator test plan
-├── testplan_videoGen.xlsx             # Output: AI Video Generator test plan
+├── data/                              # Static test case data used by the app
+├── outputs/                           # Generated Excel files and optional generated artifacts
 └── .qoder\repowiki\knowledge\en\     # Knowledge cards (auto-generated)
 ## Quick Folder Overview
 
@@ -54,8 +50,9 @@ d:\Himagent\
 
 ## Architecture & Design
 
-- **Entry points**: Three standalone scripts (`testplan_createProject.py`, `testplan_imageGen.py`, `testplan_videoGen.py`)
-- **Internal structure**: Each script follows this pipeline:
+- **Entry point**: `app.py` Flask web application
+- **Important**: legacy sample scripts are not main code and must not be treated as runtime dependencies.
+- **Internal structure**: The generation flow follows this pipeline:
   1. Define Excel styles (fonts, fills, borders, alignment)
   2. Define helper functions (`style_header`, `style_body`, `section_row`)
   3. Create workbook and sheets
@@ -66,14 +63,11 @@ d:\Himagent\
   8. Generate Data Matrix / Element Matrix sheet
   9. Generate QA Checklist sheet (50 manual items per module)
   10. Save `.xlsx` output
-- **Output artifacts**:
-  - `testplan_createProject.xlsx` — Create Project module test plan
-  - `testplan_imageGen.xlsx` — AI Image Generator module test plan
-  - `testplan_videoGen.xlsx` — AI Video Generator module test plan
+- **Output artifacts** are saved under `outputs/`.
 
 ---
 
-## Module 1: Create Project (`testplan_createProject.py`)
+## Module 1: Create Project
 
 ### What It Tests
 The "Create Your Project Now!" modal in a web application with these form fields:
@@ -98,7 +92,7 @@ The "Create Your Project Now!" modal in a web application with these form fields
 
 ---
 
-## Module 2: AI Image Generator (`testplan_imageGen.py`)
+## Module 2: AI Image Generator
 
 ### What It Tests
 The AI Image Generator page in a web application with 35 clickable UI elements across these areas:
@@ -135,7 +129,7 @@ A: Navbar (9 elements), B: Header (2), C: Model (5), D: Image Talent (4), E: Ima
 
 ---
 
-## Module 3: AI Video Generator (`testplan_videoGen.py`)
+## Module 3: AI Video Generator
 
 ### What It Tests
 The AI Video Generator page in a web application with 37 clickable UI elements across these areas:
@@ -230,19 +224,11 @@ Test plans must be **super lengkap** (exhaustive) with zero omissions:
 # Start the local web generator application
 python app.py
 
-# Generate Create Project test plan (standalone)
-python testplan_createProject.py
-
-# Generate AI Image Generator test plan (standalone)
-python testplan_imageGen.py
-
-# Generate AI Video Generator test plan (standalone)
-python testplan_videoGen.py
 ```
 
 Once running the Flask web app, open your browser and navigate to `http://localhost:5000`.
 
-Output: `.xlsx` and recreate `.py` script files will be saved in `d:\Himagent\`
+Output: generated artifacts are saved under `d:\Himagent\outputs\`.
 
 ## Key Decisions & Rules
 

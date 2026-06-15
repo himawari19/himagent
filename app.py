@@ -3,6 +3,9 @@ import re
 import json
 import traceback
 import shutil
+import hashlib
+import threading
+import sqlite3
 import base64
 import requests
 import csv
@@ -24,6 +27,7 @@ except ImportError:
 from pydantic import BaseModel, Field
 from typing import List, Literal
 from cryptography.fernet import Fernet
+from uuid import uuid4
 
 # ───────────────────────────────────────────────────
 # EPHEMERAL ENCRYPTION KEY (generated fresh each server start)
@@ -38,15 +42,16 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB max upload
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # ───────────────────────────────────────────────────
-# INITIALIZE OUTPUTS FOLDER AND COPY PRE-EXISTING FILES
+# INITIALIZE OUTPUTS FOLDER AND COPY PRE-EXISTING EXCEL FILES
 # ───────────────────────────────────────────────────
 def init_outputs_dir():
     root_dir = os.path.abspath(os.path.dirname(__file__))
     outputs_dir = os.path.join(root_dir, 'outputs')
     os.makedirs(outputs_dir, exist_ok=True)
-    # Copy pre-existing testplan xlsx/py files in root to outputs so they appear in library
+    # Copy pre-existing testplan spreadsheets in root to outputs so they appear in library.
+    # Sample/static generator scripts are not part of the main app runtime.
     for item in os.listdir(root_dir):
-        if item.startswith('testplan_') and (item.endswith('.xlsx') or item.endswith('.py')):
+        if item.startswith('testplan_') and item.endswith('.xlsx'):
             src = os.path.join(root_dir, item)
             dst = os.path.join(outputs_dir, item)
             if os.path.isfile(src):
@@ -58,6 +63,273 @@ def init_outputs_dir():
                         print(f"Error copying existing file {item}: {e}")
 
 init_outputs_dir()
+
+_GENERATION_LOCK = threading.Lock()
+_GENERATION_JOBS = {}
+_GENERATION_CACHE = {}
+_PREVIEW_CACHE = {}
+_GENERATION_DB_PATH = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'data', 'generation_jobs.sqlite3')
+
+
+def _init_generation_store():
+    os.makedirs(os.path.dirname(_GENERATION_DB_PATH), exist_ok=True)
+    with sqlite3.connect(_GENERATION_DB_PATH) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS generation_jobs (
+                job_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                message TEXT,
+                progress INTEGER DEFAULT 0,
+                cache_key TEXT,
+                cached INTEGER DEFAULT 0,
+                payload_json TEXT,
+                result_json TEXT,
+                error TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS generation_cache (
+                cache_key TEXT PRIMARY KEY,
+                result_json TEXT NOT NULL,
+                created_at TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+        conn.commit()
+
+
+def _db_row_to_dict(row):
+    if not row:
+        return None
+    return {
+        'job_id': row[0],
+        'status': row[1],
+        'message': row[2],
+        'progress': row[3] or 0,
+        'cache_key': row[4],
+        'cached': bool(row[5]),
+        'payload_json': row[6],
+        'result_json': row[7],
+        'error': row[8],
+        'created_at': row[9],
+        'updated_at': row[10],
+    }
+
+
+def _db_fetch_job(job_id):
+    if not os.path.exists(_GENERATION_DB_PATH):
+        return None
+    with sqlite3.connect(_GENERATION_DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT job_id, status, message, progress, cache_key, cached, payload_json, result_json, error, created_at, updated_at FROM generation_jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+    return _db_row_to_dict(row)
+
+
+def _db_upsert_job(job_id, state):
+    now = datetime.utcnow().isoformat()
+    existing = _db_fetch_job(job_id) or {}
+    merged = {**existing, **state}
+    merged.setdefault('created_at', now)
+    merged['updated_at'] = now
+    with sqlite3.connect(_GENERATION_DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO generation_jobs (
+                job_id, status, message, progress, cache_key, cached, payload_json, result_json, error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                status=excluded.status,
+                message=excluded.message,
+                progress=excluded.progress,
+                cache_key=excluded.cache_key,
+                cached=excluded.cached,
+                payload_json=excluded.payload_json,
+                result_json=excluded.result_json,
+                error=excluded.error,
+                created_at=excluded.created_at,
+                updated_at=excluded.updated_at
+            """,
+            (
+                job_id,
+                merged.get('status', 'queued'),
+                merged.get('message', ''),
+                int(merged.get('progress', 0) or 0),
+                merged.get('cache_key'),
+                1 if merged.get('cached') else 0,
+                merged.get('payload_json'),
+                merged.get('result_json'),
+                merged.get('error'),
+                merged.get('created_at'),
+                merged['updated_at'],
+            ),
+        )
+        conn.commit()
+    return merged
+
+
+def _db_set_cache(cache_key, result):
+    now = datetime.utcnow().isoformat()
+    payload = json.dumps(result, ensure_ascii=False)
+    with sqlite3.connect(_GENERATION_DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO generation_cache (cache_key, result_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                result_json=excluded.result_json,
+                updated_at=excluded.updated_at
+            """,
+            (cache_key, payload, now, now),
+        )
+        conn.commit()
+
+
+def _db_get_cache(cache_key):
+    if not os.path.exists(_GENERATION_DB_PATH):
+        return None
+    with sqlite3.connect(_GENERATION_DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT result_json FROM generation_cache WHERE cache_key = ?",
+            (cache_key,),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row[0])
+    except Exception:
+        return None
+
+
+def _serialize_payload(payload):
+    serializable = dict(payload)
+    serializable['files'] = [
+        {
+            'filename': item.get('filename', ''),
+            'content_b64': base64.b64encode(item.get('bytes', b'')).decode('ascii'),
+        }
+        for item in payload.get('files', [])
+    ]
+    return json.dumps(serializable, ensure_ascii=False)
+
+
+def _deserialize_payload(payload_json):
+    raw = json.loads(payload_json)
+    raw['files'] = [
+        {
+            'filename': item.get('filename', ''),
+            'bytes': base64.b64decode(item.get('content_b64', '')),
+        }
+        for item in raw.get('files', [])
+    ]
+    return raw
+
+
+def _load_cached_result(cache_key):
+    with _GENERATION_LOCK:
+        cached = _GENERATION_CACHE.get(cache_key)
+    if cached:
+        return cached
+    cached = _db_get_cache(cache_key)
+    if cached:
+        with _GENERATION_LOCK:
+            _GENERATION_CACHE[cache_key] = cached
+    return cached
+
+
+def _preview_cache_key(file_path):
+    stat = os.stat(file_path)
+    return f"{file_path}|{stat.st_mtime_ns}|{stat.st_size}"
+
+
+def _load_cached_preview(cache_key):
+    with _GENERATION_LOCK:
+        cached = _PREVIEW_CACHE.get(cache_key)
+    if cached:
+        return cached
+    return None
+
+
+def _store_cached_preview(cache_key, result):
+    with _GENERATION_LOCK:
+        _PREVIEW_CACHE[cache_key] = result
+    return result
+
+def _outputs_dir():
+    return os.path.join(os.path.abspath(os.path.dirname(__file__)), 'outputs')
+
+
+def _build_outputs_file_map():
+    outputs_dir = _outputs_dir()
+    file_map = {}
+    for root, _, filenames in os.walk(outputs_dir):
+        for item in filenames:
+            if item.endswith('.xlsx') or item.endswith('.py'):
+                file_map[item] = os.path.join(root, item)
+    return file_map
+
+
+def _filename_to_module_label(filename):
+    return filename.replace('testplan_', '').replace('.xlsx', '').replace('_', ' ').title()
+
+
+def _count_test_cases_from_workbook(file_path):
+    try:
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        ws = wb.active
+        tc_count = 0
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row and row[0] and str(row[0]).startswith('TC'):
+                tc_count += 1
+        wb.close()
+        return tc_count
+    except Exception:
+        return 0
+
+def _fallback_model_candidates(provider, model_name):
+    candidates = {
+        'gemini': ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+        'openai': ['gpt-5.4-mini', 'gpt-4o'],
+        'claude': ['claude-haiku-4-5', 'claude-sonnet-4-6'],
+        'mimo': ['mimo-v2-flash', 'mimo-v2.5'],
+        'deepseek': ['deepseek-v4-flash', 'deepseek-v4-pro'],
+        'grok': ['grok-build-0.1', 'grok-4.3'],
+        'mistral': ['mistral-small-4', 'mistral-medium-3-5'],
+    }
+    seen = set()
+    ordered = []
+    for candidate in [model_name, *candidates.get(provider, [])]:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            ordered.append(candidate)
+    return ordered
+
+
+def _module_prompt_hint(page_title):
+    title = (page_title or "").lower()
+    if "create" in title and "project" in title:
+        return "Module hint: form-driven project creation with fields, dropdowns, validation, modal behavior, and submission states."
+    if "image" in title and "generator" in title:
+        return "Module hint: image generation workflow with model selection, uploads, prompt input, advanced options, and output actions."
+    if "video" in title and "generator" in title:
+        return "Module hint: video generation workflow with frame uploads, duration, aspect ratio, resolution, audio, and player actions."
+    return "Module hint: generic web application workflow."
+
+
+def _store_job_state(job_id, state):
+    state_to_store = dict(state)
+    if 'payload' in state_to_store and state_to_store['payload'] is not None:
+        state_to_store['payload_json'] = _serialize_payload(state_to_store.pop('payload'))
+    if 'result' in state_to_store and state_to_store['result'] is not None:
+        state_to_store['result_json'] = json.dumps(state_to_store.pop('result'), ensure_ascii=False)
+    return _db_upsert_job(job_id, state_to_store)
 
 # ═══════════════════════════════════════════════════════
 # PYDANTIC SCHEMAS FOR STRUCTURED GEMINI OUTPUT
@@ -122,11 +394,32 @@ Follow these strict requirements:
 """
 
 def get_system_prompt(gen_depth="exhaustive"):
+    if gen_depth == "ultra":
+        return """You are Antigravity, a professional QA Lead and Automation Expert.
+Analyze the provided user interface screenshot(s) and any extra user instructions.
+
+Your task is to generate 5 to 8 core test cases covering the most important happy paths and critical edge cases.
+
+Follow these strict requirements:
+1. TEST SCENARIOS naming format:
+   - Format: "[Feature Area Element] - [Test Description]" (Title Case format)
+   - Preserve uppercase acronyms: XSS, SQL, CSRF, WCAG, RTL, CJK, EXIF, API, URL, UI, UX, HTML, HTTP.
+2. TC-ID FORMAT:
+   - Use the prefix provided by the user followed by a 3-digit sequential number.
+3. CASE TYPE definitions:
+   - Positive: Valid flows
+   - Negative: Invalid inputs and security checks
+   - Boundary: Limits, empty inputs, and already-selected states
+4. MANDATORY TEST COVERAGE:
+   a. Core functional elements
+   b. Basic accessibility and responsive checks
+   c. Basic security sanitization
+"""
     if gen_depth == "fast":
         return """You are Antigravity, a professional QA Lead and Automation Expert.
 Analyze the provided user interface screenshot(s) and any extra user instructions.
 
-Your task is to generate a target of 15 to 20 core test cases covering primary happy paths, high-priority form inputs, and critical edge cases.
+Your task is to generate a target of 10 to 15 core test cases covering primary happy paths, high-priority form inputs, and critical edge cases.
 
 Follow these strict requirements:
 1. TEST SCENARIOS naming format:
@@ -152,6 +445,243 @@ Follow these strict requirements:
 """
     else:
         return SYSTEM_PROMPT
+
+
+def _set_job_state(job_id, **updates):
+    with _GENERATION_LOCK:
+        job = _GENERATION_JOBS.setdefault(job_id, {})
+        job.update(updates)
+        job["updated_at"] = datetime.utcnow().isoformat()
+        persisted = _store_job_state(job_id, job)
+        return persisted
+
+
+def _get_job_state(job_id):
+    with _GENERATION_LOCK:
+        job = _GENERATION_JOBS.get(job_id)
+    if job:
+        return dict(job)
+    persisted = _db_fetch_job(job_id)
+    if not persisted:
+        return {}
+    try:
+        if persisted.get('payload_json'):
+            persisted['payload'] = _deserialize_payload(persisted['payload_json'])
+    except Exception:
+        pass
+    try:
+        if persisted.get('result_json'):
+            persisted['result'] = json.loads(persisted['result_json'])
+    except Exception:
+        pass
+    with _GENERATION_LOCK:
+        _GENERATION_JOBS[job_id] = dict(persisted)
+    return dict(persisted)
+
+
+def _make_generation_cache_key(payload):
+    hasher = hashlib.sha256()
+    key_parts = [
+        payload.get("page_title", ""),
+        payload.get("id_prefix", ""),
+        payload.get("model_name", ""),
+        payload.get("instructions", ""),
+        payload.get("provider", ""),
+        payload.get("gen_depth", ""),
+        "1" if payload.get("generate_script") else "0",
+    ]
+    for part in key_parts:
+        hasher.update(str(part).encode("utf-8", errors="ignore"))
+        hasher.update(b"\0")
+    for file_item in payload.get("files", []):
+        hasher.update(file_item.get("filename", "").encode("utf-8", errors="ignore"))
+        hasher.update(b"\0")
+        hasher.update(file_item.get("bytes", b""))
+        hasher.update(b"\0")
+    return hasher.hexdigest()
+
+
+def _run_generation_pipeline(payload, job_id=None):
+    uploaded_files = payload["files"]
+    page_title = payload["page_title"]
+    id_prefix = payload["id_prefix"]
+    model_name = payload["model_name"]
+    instructions = payload["instructions"]
+    user_api_key = payload["api_key"]
+    req_provider = payload["provider"]
+    gen_depth = payload["gen_depth"]
+    generate_script = payload["generate_script"]
+
+    if job_id:
+        _set_job_state(job_id, status="running", message="Preparing upload data...", progress=5)
+
+    sys_prompt = get_system_prompt(gen_depth)
+    provider = detect_provider(req_provider, model_name, user_api_key)
+
+    api_key = user_api_key if (user_api_key and user_api_key.lower() != 'env') else ""
+    if not api_key:
+        if provider == 'gemini':
+            api_key = os.environ.get("GEMINI_API_KEY", "")
+        elif provider == 'openai':
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+        elif provider == 'claude':
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "") or os.environ.get("CLAUDE_API_KEY", "")
+        elif provider == 'mimo':
+            api_key = os.environ.get("MIMO_API_KEY", "") or os.environ.get("XIAOMI_API_KEY", "")
+        elif provider == 'deepseek':
+            api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        elif provider == 'grok':
+            api_key = os.environ.get("XAI_API_KEY", "") or os.environ.get("GROK_API_KEY", "")
+        elif provider == 'mistral':
+            api_key = os.environ.get("MISTRAL_API_KEY", "")
+
+    if not api_key:
+        raise Exception(f"{provider.upper()} API Key is required. Please set it in your environment variables or paste it in the form.")
+
+    pil_images = []
+    try:
+        if job_id:
+            _set_job_state(job_id, message="Reading and resizing screenshots...", progress=15)
+        max_images = 3 if gen_depth == 'ultra' else (5 if gen_depth == 'fast' else 10)
+        max_side = 256 if gen_depth == 'ultra' else (384 if gen_depth == 'fast' else 512)
+        for file_item in uploaded_files[:max_images]:
+            pil_img = Image.open(BytesIO(file_item["bytes"]))
+            w, h = pil_img.size
+            if max(w, h) > max_side:
+                scale = max_side / max(w, h)
+                pil_img = pil_img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            if pil_img.mode in ("RGBA", "P"):
+                pil_img = pil_img.convert("RGB")
+            pil_images.append(pil_img)
+    except Exception as e:
+        raise Exception(f"Failed to process images: {str(e)}")
+
+    if gen_depth == "ultra":
+        prompt_prefix = (
+            f"Analyze {len(pil_images)} sequential UI screenshots for '{page_title}'. "
+            f"Return only test_cases. Use prefix '{id_prefix}'. "
+        )
+    elif generate_script:
+        prompt_prefix = (
+            f"Analyze {len(pil_images)} sequential UI screenshots for '{page_title}'. "
+            f"Return test_cases, elements, and checklist when available. Use prefix '{id_prefix}'. "
+        )
+    else:
+        prompt_prefix = (
+            f"Analyze {len(pil_images)} sequential UI screenshots for '{page_title}'. "
+            f"Return only test_cases; elements and checklist may be omitted. Use prefix '{id_prefix}'. "
+        )
+
+    prompt = (
+        f"{prompt_prefix}"
+        f"The screenshots are ordered sequentially from first to last. "
+        f"Additional context or constraints: {instructions if instructions else 'None'}"
+    )
+
+    data = None
+    if job_id:
+        _set_job_state(job_id, message="Running AI analysis...", progress=40)
+    if provider == 'gemini':
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name)
+        response = model.generate_content(
+            contents=[prompt, *pil_images, sys_prompt],
+            generation_config=genai.GenerationConfig(response_mime_type="application/json"),
+            request_options={"timeout": 300}
+        )
+        data = json.loads(response.text)
+    elif provider == 'openai':
+        base64_images = [pil_to_base64_jpeg(img, max_side=256 if gen_depth == 'ultra' else (384 if gen_depth == 'fast' else 512)) for img in pil_images]
+        data = call_openai_compatible_api("https://api.openai.com/v1", model_name, api_key, sys_prompt, prompt, base64_images, provider="OpenAI")
+    elif provider == 'claude':
+        base64_images = [pil_to_base64_jpeg(img, max_side=256 if gen_depth == 'ultra' else (384 if gen_depth == 'fast' else 512)) for img in pil_images]
+        data = call_claude_api(model_name, api_key, sys_prompt, prompt, base64_images)
+    elif provider == 'mimo':
+        base64_images = [pil_to_base64_jpeg(img, max_side=256 if gen_depth == 'ultra' else (384 if gen_depth == 'fast' else 512)) for img in pil_images]
+        data = call_openai_compatible_api("https://api.xiaomimimo.com/v1", model_name, api_key, sys_prompt, prompt, base64_images, provider="MiMo")
+    elif provider == 'deepseek':
+        base64_images = [pil_to_base64_jpeg(img, max_side=256 if gen_depth == 'ultra' else (384 if gen_depth == 'fast' else 512)) for img in pil_images]
+        data = call_openai_compatible_api("https://api.deepseek.com", model_name, api_key, sys_prompt, prompt, base64_images, provider="DeepSeek")
+    elif provider == 'grok':
+        base64_images = [pil_to_base64_jpeg(img, max_side=256 if gen_depth == 'ultra' else (384 if gen_depth == 'fast' else 512)) for img in pil_images]
+        data = call_openai_compatible_api("https://api.x.ai/v1", model_name, api_key, sys_prompt, prompt, base64_images, provider="Grok")
+    elif provider == 'mistral':
+        base64_images = [pil_to_base64_jpeg(img, max_side=256 if gen_depth == 'ultra' else (384 if gen_depth == 'fast' else 512)) for img in pil_images]
+        data = call_openai_compatible_api("https://api.mistral.ai/v1", model_name, api_key, sys_prompt, prompt, base64_images, provider="Mistral")
+
+    if not data:
+        raise Exception("No data returned from AI Model engine.")
+
+    def normalize_tc(d):
+        return {
+            'tc_id':        d.get('tc_id') or d.get('id') or d.get('test_id') or '',
+            'scenario':     d.get('scenario') or d.get('test_scenario') or d.get('title') or d.get('name') or '',
+            'case_type':    d.get('case_type') or d.get('type') or d.get('test_type') or 'Positive',
+            'precondition': d.get('precondition') or d.get('pre_condition') or d.get('prerequisites') or '',
+            'steps':        d.get('steps') or d.get('step_scenario') or d.get('test_steps') or d.get('actions') or '',
+            'expected':     d.get('expected') or d.get('expected_result') or d.get('expected_results') or d.get('result') or '',
+        }
+
+    if 'test_cases' not in data:
+        for key in data:
+            if isinstance(data[key], dict) and 'test_cases' in data[key]:
+                data = data[key]
+                break
+
+    test_cases_list = []
+    for tc_data in data.get('test_cases', []):
+        try:
+            test_cases_list.append(TestCaseSchema(**normalize_tc(tc_data)))
+        except Exception:
+            pass
+
+    if not test_cases_list:
+        raise Exception("AI returned no valid test cases. The model may have responded in an unexpected format. Try again or use a different model.")
+
+    elements_list = []
+    checklist_list = []
+    if generate_script:
+        for el_data in data.get('elements', []):
+            try:
+                elements_list.append(ElementSchema(**el_data))
+            except Exception:
+                pass
+        for chk_data in data.get('checklist', []):
+            try:
+                checklist_list.append(ChecklistSchema(**chk_data))
+            except Exception:
+                pass
+
+    clean_title = re.sub(r'[^a-zA-Z0-9_]', '', page_title.replace(' ', '_'))
+    filename_base = f"{clean_title.lower()}"
+    xlsx_name = f"testplan_{filename_base}.xlsx"
+
+    outputs_dir = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'outputs')
+    module_dir = os.path.join(outputs_dir, filename_base)
+    os.makedirs(os.path.join(module_dir, "excel"), exist_ok=True)
+    xlsx_path = os.path.join(module_dir, "excel", xlsx_name)
+
+    if job_id:
+        _set_job_state(job_id, message="Writing Excel workbook...", progress=82)
+    tc_count, ordered_cases = build_excel_file(page_title, id_prefix, test_cases_list, elements_list, checklist_list, xlsx_path, model_name=model_name, gen_depth=gen_depth)
+
+    py_name = None
+    if generate_script:
+        if job_id:
+            _set_job_state(job_id, message="Writing optional Python script...", progress=92)
+        os.makedirs(os.path.join(module_dir, "scripts"), exist_ok=True)
+        py_name = f"testplan_{filename_base}.py"
+        py_path = os.path.join(module_dir, "scripts", py_name)
+        build_python_script(page_title, id_prefix, ordered_cases, elements_list, checklist_list, py_path, filename_base, model_name=model_name, gen_depth=gen_depth)
+
+    checklist_target = 5 if gen_depth == "ultra" else (15 if gen_depth == "fast" else 50)
+    return {
+        'test_case_count': tc_count,
+        'checklist_count': checklist_target,
+        'xlsx_file': xlsx_name,
+        'py_file': py_name,
+        'download_url': f'/api/download/{xlsx_name}',
+    }
 
 # ═══════════════════════════════════════════════════════
 # MULTI-PROVIDER HELPER UTILITIES & SCHEMAS
@@ -617,7 +1147,7 @@ def build_python_script(title, prefix, test_cases, elements, checklist, output_p
     for el in elements:
         el_tuples.append((el.area, el.element_name, el.element_type, el.interactions))
 
-    checklist_target = 15 if gen_depth == "fast" else 50
+    checklist_target = 5 if gen_depth == "ultra" else (15 if gen_depth == "fast" else 50)
     final_checklist = checklist[:checklist_target]
     while len(final_checklist) < checklist_target:
         pad_index = len(final_checklist) + 1
@@ -794,9 +1324,96 @@ def generate_test_plan():
         instructions = request.form.get('instructions', '').strip()
         user_api_key = request.form.get('api_key', '').strip()
         req_provider = request.form.get('provider', '').strip()
-        gen_depth = request.form.get('gen_depth', 'exhaustive').strip().lower()
+        gen_depth = request.form.get('gen_depth', 'fast').strip().lower()
         if gen_depth not in ['fast', 'exhaustive']:
-            gen_depth = 'exhaustive'
+            gen_depth = 'fast'
+        generate_script = request.form.get('generate_script', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+
+        files_payload = []
+        for f in uploaded_files:
+            if f.filename:
+                files_payload.append({'filename': f.filename, 'bytes': f.read()})
+        if not files_payload:
+            return jsonify({'success': False, 'message': 'No valid screenshot files uploaded.'}), 400
+
+        payload = {
+            'files': files_payload,
+            'page_title': page_title,
+            'id_prefix': id_prefix,
+            'model_name': model_name,
+            'instructions': instructions,
+            'api_key': user_api_key,
+            'provider': req_provider,
+            'gen_depth': gen_depth,
+            'generate_script': generate_script,
+        }
+        cache_key = _make_generation_cache_key(payload)
+        with _GENERATION_LOCK:
+            cached = _GENERATION_CACHE.get(cache_key)
+        if cached:
+            job_id = str(uuid4())
+            _set_job_state(
+                job_id,
+                status='completed',
+                message='Completed from cache.',
+                progress=100,
+                result=cached,
+                cached=True,
+                cache_key=cache_key,
+            )
+            return jsonify({
+                'success': True,
+                'queued': False,
+                'cached': True,
+                'job_id': job_id,
+                'status_url': f'/api/jobs/{job_id}',
+                'message': 'Result loaded from cache.',
+                'progress': 100,
+                **cached,
+            }), 200
+
+        job_id = str(uuid4())
+        _set_job_state(
+            job_id,
+            status='queued',
+            message='Queued for generation...',
+            progress=0,
+            result=None,
+            error=None,
+            cached=False,
+            cache_key=cache_key,
+        )
+
+        def _worker():
+            try:
+                result = _run_generation_pipeline(payload, job_id=job_id)
+                with _GENERATION_LOCK:
+                    _GENERATION_CACHE[cache_key] = result
+                _set_job_state(
+                    job_id,
+                    status='completed',
+                    message='Generation complete.',
+                    progress=100,
+                    result=result,
+                    error=None,
+                )
+            except Exception as e:
+                _set_job_state(
+                    job_id,
+                    status='failed',
+                    message=str(e),
+                    error=str(e),
+                    progress=100,
+                )
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return jsonify({
+            'success': True,
+            'queued': True,
+            'job_id': job_id,
+            'status_url': f'/api/jobs/{job_id}',
+            'message': 'Generation queued.',
+        }), 202
             
         sys_prompt = get_system_prompt(gen_depth)
         
@@ -826,14 +1443,16 @@ def generate_test_plan():
         # Load images directly into memory — no disk I/O needed
         pil_images = []
         try:
-            for file in uploaded_files[:10]:
+            max_images = 5 if gen_depth == 'fast' else 10
+            max_side = 384 if gen_depth == 'fast' else 512
+            for file in uploaded_files[:max_images]:
                 if file.filename == '':
                     continue
                 pil_img = Image.open(BytesIO(file.read()))
-                # Resize to max 512px to reduce API token cost & latency
+                # Resize to reduce API token cost & latency
                 w, h = pil_img.size
-                if max(w, h) > 512:
-                    scale = 512 / max(w, h)
+                if max(w, h) > max_side:
+                    scale = max_side / max(w, h)
                     pil_img = pil_img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
                 if pil_img.mode in ("RGBA", "P"):
                     pil_img = pil_img.convert("RGB")
@@ -848,6 +1467,7 @@ The screenshots are ordered sequentially from first to last (representing Screen
 Analyze the state transitions, user clicks, and layout changes across these sequential screens.
 
 Generate a comprehensive test plan with prefix '{id_prefix}' for the sequential TC-ID (e.g. {id_prefix}001, {id_prefix}002, etc.).
+{'Return only the test_cases array; elements and checklist may be omitted or empty.' if not generate_script else 'Also include elements and checklist arrays when available so the recreate script can be generated.'}
 Additional context or constraints: {instructions if instructions else 'None'}
 """
         
@@ -913,18 +1533,19 @@ Additional context or constraints: {instructions if instructions else 'None'}
                 pass
 
         elements_list = []
-        for el_data in data.get('elements', []):
-            try:
-                elements_list.append(ElementSchema(**el_data))
-            except Exception:
-                pass
-
         checklist_list = []
-        for chk_data in data.get('checklist', []):
-            try:
-                checklist_list.append(ChecklistSchema(**chk_data))
-            except Exception:
-                pass
+        if generate_script:
+            for el_data in data.get('elements', []):
+                try:
+                    elements_list.append(ElementSchema(**el_data))
+                except Exception:
+                    pass
+
+            for chk_data in data.get('checklist', []):
+                try:
+                    checklist_list.append(ChecklistSchema(**chk_data))
+                except Exception:
+                    pass
 
         if not test_cases_list:
             raise Exception("AI returned no valid test cases. The model may have responded in an unexpected format. Try again or use a different model.")
@@ -934,26 +1555,28 @@ Additional context or constraints: {instructions if instructions else 'None'}
         filename_base = f"{clean_title.lower()}"
         
         xlsx_name = f"testplan_{filename_base}.xlsx"
-        py_name = f"testplan_{filename_base}.py"
         
         outputs_dir = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'outputs')
         # Create module‑specific folder under outputs
         module_dir = os.path.join(outputs_dir, filename_base)
         os.makedirs(os.path.join(module_dir, "excel"), exist_ok=True)
-        os.makedirs(os.path.join(module_dir, "scripts"), exist_ok=True)
         xlsx_path = os.path.join(module_dir, "excel", xlsx_name)
-        py_path = os.path.join(module_dir, "scripts", py_name)
         
         # Build standard styled Excel file
         tc_count, ordered_cases = build_excel_file(page_title, id_prefix, test_cases_list, elements_list, checklist_list, xlsx_path, model_name=model_name, gen_depth=gen_depth)
         
-        # Build self-contained Python recreate script (using same ordered list as Excel)
-        build_python_script(page_title, id_prefix, ordered_cases, elements_list, checklist_list, py_path, filename_base, model_name=model_name, gen_depth=gen_depth)
+        py_name = None
+        if generate_script:
+            os.makedirs(os.path.join(module_dir, "scripts"), exist_ok=True)
+            py_name = f"testplan_{filename_base}.py"
+            py_path = os.path.join(module_dir, "scripts", py_name)
+            # Build self-contained Python recreate script only when requested.
+            build_python_script(page_title, id_prefix, ordered_cases, elements_list, checklist_list, py_path, filename_base, model_name=model_name, gen_depth=gen_depth)
         
-        checklist_target = 15 if gen_depth == "fast" else 50
+        checklist_target = 5 if gen_depth == "ultra" else (15 if gen_depth == "fast" else 50)
         return jsonify({
             'success': True,
-            'message': 'Test plan and script generated successfully!',
+            'message': 'Test plan generated successfully!',
             'test_case_count': tc_count,
             'checklist_count': checklist_target,
             'xlsx_file': xlsx_name,
@@ -972,6 +1595,26 @@ Additional context or constraints: {instructions if instructions else 'None'}
         else:
             msg = str(e)
         return jsonify({'success': False, 'message': msg}), 500
+
+
+@app.route('/api/jobs/<job_id>', methods=['GET'])
+def get_generation_job(job_id):
+    job = _get_job_state(job_id)
+    if not job:
+        return jsonify({'success': False, 'message': 'Job not found.'}), 404
+    response = {
+        'success': True,
+        'job_id': job_id,
+        'status': job.get('status', 'unknown'),
+        'message': job.get('message', ''),
+        'progress': job.get('progress', 0),
+        'cached': job.get('cached', False),
+    }
+    if job.get('status') == 'completed' and job.get('result'):
+        response.update(job['result'])
+    if job.get('status') == 'failed':
+        response['error'] = job.get('error') or job.get('message') or 'Generation failed.'
+    return jsonify(response)
 
 def find_file_in_outputs(filename):
     """Search outputs/ recursively for a file matching filename. Returns full path or None."""
@@ -1064,23 +1707,30 @@ def get_preview(filename):
         file_path = find_file_in_outputs(filename)
         if not file_path or not os.path.exists(file_path):
             return jsonify({'success': False, 'message': f'File {filename} not found.'}), 404
-            
+
+        cache_key = _preview_cache_key(file_path)
+        cached = _load_cached_preview(cache_key)
+        if cached:
+            return jsonify(cached)
+
         if filename.endswith('.py'):
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
-            return jsonify({'success': True, 'type': 'python', 'content': content})
-            
+            result = {'success': True, 'type': 'python', 'content': content}
+            _store_cached_preview(cache_key, result)
+            return jsonify(result)
+
         elif filename.endswith('.xlsx'):
-            wb = openpyxl.load_workbook(file_path, data_only=True)
+            wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
             sheets = {}
             for sheet_name in wb.sheetnames:
                 ws = wb[sheet_name]
                 rows = []
-                
+
                 # Standard grid dimensions (limit to keep load times short)
-                max_r = min(ws.max_row or 1, 200)
-                max_c = min(ws.max_column or 1, 20)
-                
+                max_r = min(ws.max_row or 1, 160)
+                max_c = min(ws.max_column or 1, 18)
+
                 # Read cells
                 for r in range(1, max_r + 1):
                     row_cells = []
@@ -1091,7 +1741,7 @@ def get_preview(filename):
                         val_str = str(val) if val is not None else ""
                         if val_str:
                             row_has_val = True
-                            
+
                         bg_color = None
                         if cell.fill and hasattr(cell.fill, 'start_color') and cell.fill.start_color:
                             rgb = cell.fill.start_color.rgb
@@ -1100,7 +1750,7 @@ def get_preview(filename):
                                     bg_color = "#" + rgb[2:]
                                 elif len(rgb) == 6:
                                     bg_color = "#" + rgb
-                                    
+
                         is_bold = False
                         font_color = None
                         if cell.font:
@@ -1112,7 +1762,7 @@ def get_preview(filename):
                                         font_color = "#" + f_rgb[2:]
                                     elif len(f_rgb) == 6:
                                         font_color = "#" + f_rgb
-                                        
+
                         row_cells.append({
                             'value': val_str,
                             'bg_color': bg_color,
@@ -1122,19 +1772,21 @@ def get_preview(filename):
                         })
                     if row_has_val:
                         rows.append(row_cells)
-                        
+
                 sheets[sheet_name] = {
                     'rows': rows,
                     'max_row': len(rows),
                     'max_col': max_c
                 }
-            return jsonify({'success': True, 'type': 'excel', 'sheets': sheets})
-            
+            wb.close()
+            result = {'success': True, 'type': 'excel', 'sheets': sheets}
+            _store_cached_preview(cache_key, result)
+            return jsonify(result)
+
         return jsonify({'success': False, 'message': 'Unsupported file format.'}), 400
     except Exception as e:
         traceback.print_exc()
         return jsonify({'success': False, 'message': str(e)}), 500
-
 @app.route('/api/save_xlsx', methods=['POST'])
 def save_xlsx():
     try:
@@ -1153,7 +1805,7 @@ def save_xlsx():
         # 1. Check if it's a CRUD module
         module_key = None
         for key, cfg in _CRUD_MODULES.items():
-            if filename == cfg['entry_script'].replace('.py', '.xlsx'):
+            if filename == cfg['xlsx_filename']:
                 module_key = key
                 break
 
@@ -1207,14 +1859,7 @@ def save_xlsx():
             
             # Save back to data python file
             _save_module_cases(module_key, cases)
-            
-            # Re-run entry point script to regenerate spreadsheet with formula updates, formatting, etc.
-            script_path = os.path.join(root_dir, _CRUD_MODULES[module_key]['entry_script'])
-            import subprocess
-            subprocess.run([os.sys.executable, script_path], capture_output=True, text=True, timeout=60, cwd=root_dir)
-            
-            # Copy regenerated file to outputs/
-            shutil.copy2(os.path.join(root_dir, filename), os.path.join(outputs_dir, filename))
+            wb.save(file_path)
         else:
             # For custom files, save directly to Excel
             wb = openpyxl.load_workbook(file_path)
@@ -1644,58 +2289,78 @@ Be concise and accurate. Only return the JSON object.
 def get_stats():
     """Return aggregated statistics from the outputs/ folder."""
     try:
-        outputs_dir = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'outputs')
+        outputs_dir = _outputs_dir()
         os.makedirs(outputs_dir, exist_ok=True)
 
+        file_map = _build_outputs_file_map()
         total_plans = 0
         total_test_cases = 0
         total_size_bytes = 0
-        files_by_date = {}  # date_str -> count
+        files_by_date = {}
         recent_files = []
+        seen_xlsx = set()
 
-        for item in sorted(os.listdir(outputs_dir), key=lambda x: os.path.getmtime(os.path.join(outputs_dir, x)), reverse=True):
-            file_path = os.path.join(outputs_dir, item)
-            if not os.path.isfile(file_path):
-                continue
+        def add_output_file(file_name, file_path, test_case_count=None):
+            nonlocal total_plans, total_test_cases, total_size_bytes
+            if not file_path or not os.path.exists(file_path) or file_name in seen_xlsx:
+                return
 
             stat = os.stat(file_path)
-            size = stat.st_size
-            mtime = stat.st_mtime
-            date_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d')
+            total_plans += 1
+            total_size_bytes += stat.st_size
+            date_str = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d')
+            files_by_date[date_str] = files_by_date.get(date_str, 0) + 1
+            if test_case_count is None:
+                test_case_count = _count_test_cases_from_workbook(file_path)
+            try:
+                total_test_cases += int(test_case_count or 0)
+            except Exception:
+                pass
 
-            if item.endswith('.xlsx'):
-                total_plans += 1
-                total_size_bytes += size
-                files_by_date[date_str] = files_by_date.get(date_str, 0) + 1
+            recent_files.append({
+                'name': file_name,
+                'size': stat.st_size,
+                'modified': stat.st_mtime,
+                'module': _filename_to_module_label(file_name),
+                'type': 'excel',
+            })
+            seen_xlsx.add(file_name)
 
-                # Extract module name from filename
-                clean = item.replace('testplan_', '').replace('.xlsx', '').replace('_', ' ').title()
+        if os.path.exists(_GENERATION_DB_PATH):
+            with sqlite3.connect(_GENERATION_DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT result_json, created_at, updated_at
+                    FROM generation_jobs
+                    WHERE status = 'completed' AND result_json IS NOT NULL
+                    ORDER BY COALESCE(updated_at, created_at) DESC
+                    """
+                ).fetchall()
 
-                # Count test cases by reading the Excel (first sheet, skip header & section rows)
+            for row in rows:
                 try:
-                    wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-                    ws = wb.active
-                    tc_count = 0
-                    for row in ws.iter_rows(min_row=2, values_only=True):
-                        if row[0] and str(row[0]).startswith('TC'):
-                            tc_count += 1
-                    total_test_cases += tc_count
-                    wb.close()
+                    result = json.loads(row['result_json'])
                 except Exception:
-                    pass
+                    continue
+                xlsx_name = result.get('xlsx_file')
+                if not xlsx_name:
+                    continue
+                add_output_file(
+                    xlsx_name,
+                    file_map.get(xlsx_name),
+                    result.get('test_case_count'),
+                )
 
-                recent_files.append({
-                    'name': item,
-                    'size': size,
-                    'modified': mtime,
-                    'module': clean,
-                    'type': 'excel'
-                })
+        for file_name, file_path in file_map.items():
+            if not file_name.endswith('.xlsx'):
+                continue
+            add_output_file(file_name, file_path)
 
-        # Sort dates for chart
+        recent_files.sort(key=lambda item: item['modified'], reverse=True)
         sorted_dates = sorted(files_by_date.keys())
-        chart_labels = sorted_dates[-14:]  # last 14 days
-        chart_values = [files_by_date.get(d, 0) for d in chart_labels]
+        chart_labels = sorted_dates[-14:]
+        chart_values = [files_by_date.get(date_key, 0) for date_key in chart_labels]
 
         return jsonify({
             'success': True,
@@ -1705,20 +2370,11 @@ def get_stats():
             'total_size_kb': round(total_size_bytes / 1024, 1),
             'chart_labels': chart_labels,
             'chart_values': chart_values,
-            'recent_files': recent_files[:15]
+            'recent_files': recent_files[:15],
         })
     except Exception as e:
         traceback.print_exc()
         return jsonify({'success': False, 'message': str(e)}), 500
-
-
-# ───────────────────────────────────────────────────
-# DASHBOARD PAGE ROUTE
-# ───────────────────────────────────────────────────
-@app.route('/dashboard')
-def dashboard():
-    return render_template('dashboard.html')
-
 
 # ═══════════════════════════════════════════════════════
 # CRUD ENDPOINTS FOR STATIC TEST CASES
@@ -1727,19 +2383,19 @@ def dashboard():
 _CRUD_MODULES = {
     'createProject': {
         'data_file': 'data/createProject_cases.py',
-        'entry_script': 'testplan_createProject.py',
+        'xlsx_filename': 'testplan_createProject.xlsx',
         'func': 'get_tests',
         'format': 'create',   # tuples: (tc_id|"SECTION", ...)
     },
     'imageGen': {
         'data_file': 'data/imageGen_cases.py',
-        'entry_script': 'testplan_imageGen.py',
+        'xlsx_filename': 'testplan_imageGen.xlsx',
         'func': 'get_test_cases',
         'format': 'v2',        # tuples: (scenario, test_name, case_type, precond, steps, expected)
     },
     'videoGen': {
         'data_file': 'data/videoGen_cases.py',
-        'entry_script': 'testplan_videoGen.py',
+        'xlsx_filename': 'testplan_videoGen.xlsx',
         'func': 'get_test_cases',
         'format': 'v2',
     },
@@ -1890,27 +2546,12 @@ def save_testcases(module_key):
         cases = payload.get('cases', [])
         _save_module_cases(module_key, cases)
 
-        # Re-run the entry point script to regenerate xlsx
-        root = os.path.abspath(os.path.dirname(__file__))
-        script = os.path.join(root, _CRUD_MODULES[module_key]['entry_script'])
-        import subprocess
-        result = subprocess.run(
-            [os.sys.executable, script],
-            capture_output=True, text=True, timeout=60, cwd=root
-        )
-        if result.returncode != 0:
-            return jsonify({
-                'success': False,
-                'message': f'Script error: {result.stderr.strip() or result.stdout.strip()}'
-            }), 500
-
         # Count TCs in result
         tc_count = sum(1 for c in cases if c.get('type') == 'testcase')
         return jsonify({
             'success': True,
-            'message': f'Saved & regenerated successfully.',
-            'tc_count': tc_count,
-            'script_output': result.stdout.strip()
+            'message': f'Saved successfully.',
+            'tc_count': tc_count
         })
     except Exception as e:
         traceback.print_exc()
@@ -1921,13 +2562,10 @@ def save_testcases(module_key):
 def export_static_xlsx(module_key):
     if module_key not in _CRUD_MODULES:
         return jsonify({'success': False, 'message': f'Unknown module: {module_key}'}), 404
-    root = os.path.abspath(os.path.dirname(__file__))
-    filename = f"testplan_{module_key}.xlsx"
-    # Try root first, then outputs/
-    for search_dir in [root, os.path.join(root, 'outputs')]:
-        fpath = os.path.join(search_dir, filename)
-        if os.path.isfile(fpath):
-            return send_file(fpath, as_attachment=True)
+    filename = _CRUD_MODULES[module_key]['xlsx_filename']
+    fpath = find_file_in_outputs(filename)
+    if fpath and os.path.isfile(fpath):
+        return send_file(fpath, as_attachment=True)
     return jsonify({'success': False, 'message': f'{filename} not found.'}), 404
 
 

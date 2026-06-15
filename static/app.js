@@ -38,6 +38,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const apiKeyInput = document.getElementById("api_key");
   const instructionsInput = document.getElementById("instructions");
   const genDepthSelect = document.getElementById("gen_depth");
+  const generateScriptToggle = document.getElementById("generate_script");
 
   // New Multi-Provider Elements
   const providerSelect = document.getElementById("provider_select");
@@ -63,11 +64,87 @@ document.addEventListener("DOMContentLoaded", () => {
   const statCases = document.getElementById("statCases");
   const xlsxFilename = document.getElementById("xlsxFilename");
   const pyFilename = document.getElementById("pyFilename");
+  const pyFileRow = document.getElementById("pyFileRow");
   const downloadBtn = document.getElementById("downloadBtn");
   const downloadPyBtn = document.getElementById("downloadPyBtn");
   const resetBtn = document.getElementById("resetBtn");
 
   let progressInterval = null;
+  let fileProcessingPromise = null;
+
+  const MAX_SCREENSHOTS = 10;
+  const CLIENT_IMAGE_MAX_SIDE = 1600;
+  const CLIENT_IMAGE_QUALITY = 0.84;
+  const CLIENT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+
+  function fileSignature(file) {
+    return `${file.name}|${file.size}|${file.lastModified}`;
+  }
+
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let value = bytes;
+    let unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+    return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+  }
+
+  function readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error('Failed to read file.'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function loadImageFromDataURL(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Failed to decode image.'));
+      img.src = dataUrl;
+    });
+  }
+
+  async function compressImageFile(file) {
+    if (!file.type.startsWith('image/')) return file;
+
+    try {
+      const dataUrl = await readFileAsDataURL(file);
+      const img = await loadImageFromDataURL(dataUrl);
+      const maxSide = Math.max(img.naturalWidth || img.width || 0, img.naturalHeight || img.height || 0);
+      const needsResize = maxSide > CLIENT_IMAGE_MAX_SIDE || file.size > CLIENT_IMAGE_MAX_BYTES;
+      if (!needsResize) {
+        return file;
+      }
+
+      const scale = Math.min(1, CLIENT_IMAGE_MAX_SIDE / maxSide);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round((img.naturalWidth || img.width) * scale));
+      canvas.height = Math.max(1, Math.round((img.naturalHeight || img.height) * scale));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return file;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      const blob = await new Promise((resolve) => {
+        canvas.toBlob(resolve, 'image/jpeg', CLIENT_IMAGE_QUALITY);
+      });
+      if (!blob) return file;
+
+      const baseName = file.name.replace(/\.[^.]+$/, '') || 'screenshot';
+      return new File([blob], `${baseName}.jpg`, {
+        type: 'image/jpeg',
+        lastModified: file.lastModified || Date.now(),
+      });
+    } catch {
+      return file;
+    }
+  }
 
   // ═══════════════════════════════════════════════════════
   // AI PROVIDERS AND MODEL CONFIGURATION
@@ -295,7 +372,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // File input change
   screenshotInput.addEventListener("change", () => {
-    addFiles(screenshotInput.files);
+    void addFiles(screenshotInput.files);
   });
 
   // Drag events
@@ -328,7 +405,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const dt = e.dataTransfer;
     const files = dt.files;
     if (files.length > 0) {
-      addFiles(files);
+      void addFiles(files);
     }
   });
 
@@ -373,7 +450,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (pastedFiles.length > 0) {
       e.preventDefault();
-      addFiles(pastedFiles);
+      void addFiles(pastedFiles);
 
       // Visual feedback: pulse animation on the drop zone
       dropZone.classList.add("paste-flash");
@@ -382,35 +459,81 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Add files to selection array
-  function addFiles(filesList) {
-    const remainingSlots = 10 - selectedFiles.length;
-    if (remainingSlots <= 0) {
-      showToast("Maximum 10 screenshots reached.", "warning");
-      return;
+  async function addFiles(filesList) {
+    const work = (async () => {
+      const remainingSlots = MAX_SCREENSHOTS - selectedFiles.length;
+      if (remainingSlots <= 0) {
+        showToast("Maximum 10 screenshots reached.", "warning");
+        return;
+      }
+
+      const filesArray = Array.from(filesList || []);
+      const validImages = filesArray.filter((file) => file.type.startsWith("image/"));
+
+      if (validImages.length === 0) {
+        showToast("Please select valid image files (JPG, PNG, WEBP).", "warning");
+        return;
+      }
+
+      const currentSignatures = new Set(selectedFiles.map(fileSignature));
+      const uniqueImages = validImages.filter((file) => !currentSignatures.has(fileSignature(file)));
+      if (uniqueImages.length === 0) {
+        showToast("Those screenshots are already added.", "info", 2000);
+        return;
+      }
+
+      const filesToAdd = uniqueImages.slice(0, remainingSlots);
+      if (uniqueImages.length > remainingSlots) {
+        showToast(
+          `Only added first ${remainingSlots} images. Maximum limit is 10.`,
+          "warning",
+        );
+      }
+
+      const oversize = filesToAdd.filter((file) => file.size > CLIENT_IMAGE_MAX_BYTES);
+      if (oversize.length > 0) {
+        showToast(
+          `${oversize.length} file(s) exceed 5 MB and will be compressed for faster upload.`,
+          "info",
+          2500,
+        );
+      }
+
+      const originalSize = filesToAdd.reduce((sum, file) => sum + file.size, 0);
+      const optimized = [];
+      let compressedCount = 0;
+      for (const file of filesToAdd) {
+        const processed = await compressImageFile(file);
+        if (processed.size < file.size) {
+          compressedCount += 1;
+        }
+        optimized.push(processed);
+      }
+
+      selectedFiles = [...selectedFiles, ...optimized];
+
+      if (optimized.length > 0 && (compressedCount > 0 || originalSize > optimized.reduce((sum, file) => sum + file.size, 0))) {
+        const finalSize = optimized.reduce((sum, file) => sum + file.size, 0);
+        const saved = Math.max(0, originalSize - finalSize);
+        showToast(
+          `Optimized ${optimized.length} screenshot(s), saved ${formatBytes(saved)} for upload.`,
+          "success",
+          2400,
+        );
+      }
+
+      renderPreviews();
+      screenshotInput.value = "";
+    })();
+
+    fileProcessingPromise = work;
+    try {
+      await work;
+    } finally {
+      if (fileProcessingPromise === work) {
+        fileProcessingPromise = null;
+      }
     }
-
-    const filesArray = Array.from(filesList);
-    const validImages = filesArray.filter((file) =>
-      file.type.startsWith("image/"),
-    );
-
-    if (validImages.length === 0) {
-      showToast("Please select valid image files (JPG, PNG, WEBP).", "warning");
-      return;
-    }
-
-    // Add up to remaining slots limit
-    const filesToAdd = validImages.slice(0, remainingSlots);
-    selectedFiles = [...selectedFiles, ...filesToAdd];
-
-    if (validImages.length > remainingSlots) {
-      showToast(
-        `Only added first ${remainingSlots} images. Maximum limit is 10.`,
-        "warning",
-      );
-    }
-
-    renderPreviews();
   }
 
   // ═══════════════════════════════════════════════════════
@@ -847,9 +970,80 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // ═══════════════════════════════════════════════════════
-  // LIBRARY ACTIONS & PREVIEW SYSTEM
-  // ═══════════════════════════════════════════════════════
+  // ---------------------------------------------------------------------------
+  // Library Actions & Preview System
+  // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Job Polling
+  // ---------------------------------------------------------------------------
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function applyJobProgress(job) {
+    if (!job) return;
+    const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
+    progressBar.style.width = `${progress}%`;
+    loaderModal.style.setProperty("--loader-progress", `${progress}%`);
+
+    if (progress < 15) {
+      setStepState(step1, "active");
+      setStepState(step2, "pending");
+      setStepState(step3, "pending");
+      setStepState(step4, "pending");
+    } else if (progress < 45) {
+      setStepState(step1, "completed");
+      setStepState(step2, "active");
+      setStepState(step3, "pending");
+      setStepState(step4, "pending");
+    } else if (progress < 82) {
+      setStepState(step1, "completed");
+      setStepState(step2, "completed");
+      setStepState(step3, "active");
+      setStepState(step4, "pending");
+    } else if (progress < 100) {
+      setStepState(step1, "completed");
+      setStepState(step2, "completed");
+      setStepState(step3, "completed");
+      setStepState(step4, "active");
+    }
+  }
+
+  async function pollGenerationJob(statusUrl) {
+    let lastStatus = "";
+    let delayMs = 900;
+    for (let attempt = 0; attempt < 240; attempt++) {
+      const response = await fetch(statusUrl, { cache: "no-store" });
+      const job = await response.json();
+      if (!job.success) {
+        throw new Error(job.message || "Unable to fetch job status.");
+      }
+
+      if (typeof job.progress === "number") {
+        applyJobProgress(job);
+      }
+
+      if (job.message && job.message !== lastStatus) {
+        addLog(job.message, job.status === "failed" ? "error" : "info");
+        lastStatus = job.message;
+      }
+
+      if (job.status === "completed") {
+        return job;
+      }
+      if (job.status === "failed") {
+        throw new Error(job.error || job.message || "Generation failed.");
+      }
+
+      if (job.progress >= 60) {
+        delayMs = 1400;
+      } else if (job.progress >= 30) {
+        delayMs = 1100;
+      }
+      await sleep(delayMs);
+      delayMs = Math.min(2000, delayMs + 120);
+    }
+    throw new Error("Timed out waiting for generation job.");
+  }
+
   const previewModal = document.getElementById("previewModal");
   const previewFilename = document.getElementById("previewFilename");
   const previewHeaderIcon = document.getElementById("previewHeaderIcon");
@@ -866,6 +1060,9 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentFilename = "";
   let currentSheetsData = null;
   let excelChanges = {}; // { sheetName: [{'coordinate': 'A1', 'value': 'val'}] }
+  const previewResponseCache = new Map();
+  let libraryFileIndex = new Map();
+  const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
 
   const previewSubHeader = document.getElementById("previewSubHeader");
   const previewSearchInput = document.getElementById("previewSearchInput");
@@ -875,11 +1072,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // Load library items from server
   async function loadLibrary() {
     try {
-      const response = await fetch("/api/files");
+      const response = await fetch("/api/files", { cache: "no-store" });
       const result = await response.json();
 
       const libraryList = document.getElementById("libraryList");
       libraryList.innerHTML = "";
+      libraryFileIndex = new Map();
 
       if (!result.success || !result.tree || Object.keys(result.tree).length === 0) {
         libraryList.innerHTML = `
@@ -891,19 +1089,21 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       const tree = result.tree;
+      const moduleNames = Object.keys(tree).sort();
+      let pendingFragment = document.createDocumentFragment();
+      let chunkCount = 0;
 
-      Object.keys(tree).sort().forEach((moduleName) => {
+      for (let moduleIndex = 0; moduleIndex < moduleNames.length; moduleIndex++) {
+        const moduleName = moduleNames[moduleIndex];
         const moduleData = tree[moduleName];
         const excelFiles = moduleData.excel || [];
         const scriptFiles = moduleData.scripts || [];
         const totalFiles = excelFiles.length + scriptFiles.length;
-        if (totalFiles === 0) return;
+        if (totalFiles === 0) continue;
 
-        // Module accordion block
         const moduleBlock = document.createElement("div");
         moduleBlock.className = "lib-module-block";
 
-        // Module header (clickable toggle)
         const moduleHeader = document.createElement("div");
         moduleHeader.className = "lib-module-header";
         moduleHeader.innerHTML = `
@@ -916,11 +1116,9 @@ document.addEventListener("DOMContentLoaded", () => {
         `;
         moduleBlock.appendChild(moduleHeader);
 
-        // Module body (collapsible)
         const moduleBody = document.createElement("div");
         moduleBody.className = "lib-module-body hidden";
 
-        // Helper to create a sub-folder accordion
         function buildSubFolder(label, iconClass, colorClass, files) {
           if (files.length === 0) return null;
 
@@ -944,6 +1142,13 @@ document.addEventListener("DOMContentLoaded", () => {
             const sizeKB = (file.size / 1024).toFixed(1) + " KB";
             const dateObj = new Date(file.modified * 1000);
             const dateStr = dateObj.toLocaleDateString() + " " + dateObj.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+            libraryFileIndex.set(file.name, {
+              name: file.name,
+              modified: file.modified,
+              size: file.size,
+              type: file.type,
+            });
 
             const fileRow = document.createElement("div");
             fileRow.className = "lib-file-row";
@@ -975,8 +1180,6 @@ document.addEventListener("DOMContentLoaded", () => {
           });
 
           subBlock.appendChild(subBody);
-
-          // Toggle sub-folder on click
           subHeader.addEventListener("click", () => {
             const isOpen = !subBody.classList.contains("hidden");
             subBody.classList.toggle("hidden", isOpen);
@@ -992,8 +1195,6 @@ document.addEventListener("DOMContentLoaded", () => {
         if (scriptSub) moduleBody.appendChild(scriptSub);
 
         moduleBlock.appendChild(moduleBody);
-
-        // Toggle module on click
         moduleHeader.addEventListener("click", () => {
           const isOpen = !moduleBody.classList.contains("hidden");
           moduleBody.classList.toggle("hidden", isOpen);
@@ -1001,20 +1202,26 @@ document.addEventListener("DOMContentLoaded", () => {
           moduleHeader.querySelector(".lib-folder-icon").className = `fa-solid ${isOpen ? 'fa-folder' : 'fa-folder-open'} lib-folder-icon`;
         });
 
-        // Default collapsed
         moduleBody.classList.add("hidden");
         moduleHeader.querySelector(".lib-chevron").style.transform = "rotate(0deg)";
         moduleHeader.querySelector(".lib-folder-icon").className = "fa-solid fa-folder lib-folder-icon";
 
-        libraryList.appendChild(moduleBlock);
-      });
+        pendingFragment.appendChild(moduleBlock);
+        chunkCount += 1;
+        if (chunkCount % 4 === 0) {
+          libraryList.appendChild(pendingFragment);
+          pendingFragment = document.createDocumentFragment();
+          await nextFrame();
+        }
+      }
+
+      if (pendingFragment.childNodes.length > 0) {
+        libraryList.appendChild(pendingFragment);
+      }
     } catch (error) {
       console.error("Error loading library:", error);
     }
   }
-
-
-
   function deleteFile(fileName, btn) {
     const deleteModal = document.getElementById("deleteModal");
     const deleteFileNameEl = document.getElementById("deleteFileName");
@@ -1046,7 +1253,7 @@ document.addEventListener("DOMContentLoaded", () => {
         .then((data) => {
           deleteModal.classList.add("hidden");
           if (data.success) {
-            const row = btn.closest(".library-item");
+            const row = btn.closest(".lib-file-row") || btn.closest(".library-item");
             if (row) {
               row.style.transition = "opacity 0.3s ease, transform 0.3s ease";
               row.style.opacity = "0";
@@ -1397,16 +1604,11 @@ document.addEventListener("DOMContentLoaded", () => {
       ? "fa-solid fa-file-excel file-icon excel"
       : "fa-solid fa-file-code file-icon python";
 
-    try {
-      const response = await fetch(`/api/preview/${filename}`);
-      const result = await response.json();
-
-      if (!result.success) {
-        showToast("Preview error: " + result.message, "error");
-        previewModal.classList.add("hidden");
-        return;
-      }
-
+    const previewMeta = libraryFileIndex.get(filename);
+    const previewCacheKey = previewMeta
+      ? `${filename}|${previewMeta.modified}|${previewMeta.size}`
+      : filename;
+    const renderPreviewResult = (result) => {
       previewFilename.textContent = filename;
 
       if (result.type === "python") {
@@ -1441,16 +1643,34 @@ document.addEventListener("DOMContentLoaded", () => {
             excelTabs.appendChild(tabBtn);
           });
 
-          // Render first sheet by default
           renderExcelSheet(sheets[sheetNames[0]], "", sheetNames[0]);
         }
       }
+    };
+
+    try {
+      const cachedPreview = previewResponseCache.get(previewCacheKey);
+      if (cachedPreview) {
+        renderPreviewResult(cachedPreview);
+        return;
+      }
+
+      const response = await fetch(`/api/preview/${filename}`, { cache: "no-store" });
+      const result = await response.json();
+
+      if (!result.success) {
+        showToast("Preview error: " + result.message, "error");
+        previewModal.classList.add("hidden");
+        return;
+      }
+
+      previewResponseCache.set(previewCacheKey, result);
+      renderPreviewResult(result);
     } catch (error) {
       showToast("Error loading file preview: " + error.message, "error");
       previewModal.classList.add("hidden");
     }
   }
-
   // Copy python script functionality
   previewCopyBtn.addEventListener("click", () => {
     navigator.clipboard
@@ -1499,6 +1719,11 @@ document.addEventListener("DOMContentLoaded", () => {
   generatorForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     console.log("[DEBUG] Form submitted");
+
+    if (fileProcessingPromise) {
+      showToast("Optimizing uploaded screenshots. Please wait a moment.", "info", 1800);
+      await fileProcessingPromise;
+    }
 
     if (selectedFiles.length === 0) {
       console.log("[DEBUG] No files selected — aborting");
@@ -1552,6 +1777,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (genDepthSelect) {
       formData.append("gen_depth", genDepthSelect.value);
     }
+    formData.append("generate_script", generateScriptToggle && generateScriptToggle.checked ? "1" : "0");
     console.log(
       "[DEBUG] Payload ready — page_title:",
       pageTitleInput.value,
@@ -1583,18 +1809,40 @@ document.addEventListener("DOMContentLoaded", () => {
       console.log("[DEBUG] Result:", result.success, result.message || "");
 
       if (result.success) {
-        // Populate results immediately (hidden)
-        statCases.textContent = result.test_case_count;
-        xlsxFilename.textContent = result.xlsx_file;
-        pyFilename.textContent = result.py_file;
-        downloadBtn.href = result.download_url;
-        downloadPyBtn.href = `/api/download/${result.py_file}`;
-        loadLibrary();
+        const finalizeResult = (jobResult) => {
+          statCases.textContent = jobResult.test_case_count;
+          xlsxFilename.textContent = jobResult.xlsx_file;
+          downloadBtn.href = jobResult.download_url;
+          if (jobResult.py_file) {
+            pyFilename.textContent = jobResult.py_file;
+            if (pyFileRow) pyFileRow.style.display = "";
+            downloadPyBtn.href = `/api/download/${jobResult.py_file}`;
+            downloadPyBtn.style.display = "";
+            downloadPyBtn.removeAttribute("aria-hidden");
+          } else {
+            if (pyFileRow) pyFileRow.style.display = "none";
+            downloadPyBtn.style.display = "none";
+            downloadPyBtn.setAttribute("aria-hidden", "true");
+          }
+          loadLibrary();
 
-        stopProgress(true, () => {
-          // Called when user clicks Done — show result card
-          resultCard.classList.remove("hidden");
-        });
+          stopProgress(true, () => {
+            resultCard.classList.remove("hidden");
+          });
+        };
+
+        if (result.queued && result.status_url) {
+          addLog(result.message || "Generation queued...", "info");
+          const jobResult = await pollGenerationJob(result.status_url);
+          finalizeResult(jobResult);
+        } else if (result.status === "completed" && result.status_url) {
+          const jobResult = await pollGenerationJob(result.status_url);
+          finalizeResult(jobResult);
+        } else if (result.test_case_count) {
+          finalizeResult(result);
+        } else {
+          stopProgress(false, result.message || "Generation could not be started.");
+        }
       } else {
         stopProgress(false, result.message);
       }
@@ -1622,6 +1870,7 @@ document.addEventListener("DOMContentLoaded", () => {
     onProviderChange();
     instructionsInput.value = "";
     if (genDepthSelect) genDepthSelect.value = "fast";
+    if (generateScriptToggle) generateScriptToggle.checked = false;
 
     selectedFiles = [];
     renderPreviews();
@@ -1635,6 +1884,9 @@ document.addEventListener("DOMContentLoaded", () => {
     resultCard.classList.add("hidden");
     infoCard.classList.remove("hidden");
     generatorForm.classList.remove("hidden");
+    if (pyFileRow) pyFileRow.style.display = "none";
+    downloadPyBtn.style.display = "none";
+    downloadPyBtn.setAttribute("aria-hidden", "true");
 
     progressBar.style.width = "0%";
   });
@@ -1666,10 +1918,13 @@ document.addEventListener("DOMContentLoaded", () => {
     detectBtn.classList.remove("hidden");
 
     selectedFiles.forEach((file, index) => {
-      const reader = new FileReader();
       const itemDiv = document.createElement("div");
       itemDiv.className = "preview-item";
       const img = document.createElement("img");
+      img.loading = "lazy";
+      const objectUrl = URL.createObjectURL(file);
+      img.onload = () => URL.revokeObjectURL(objectUrl);
+      img.src = objectUrl;
       const labelSpan = document.createElement("span");
       labelSpan.className = "preview-item-label";
       labelSpan.textContent = `Screen ${index + 1}`;
@@ -1683,10 +1938,6 @@ document.addEventListener("DOMContentLoaded", () => {
         selectedFiles.splice(index, 1);
         renderPreviews();
       });
-      reader.onload = (e) => {
-        img.src = e.target.result;
-      };
-      reader.readAsDataURL(file);
       itemDiv.appendChild(img);
       itemDiv.appendChild(labelSpan);
       itemDiv.appendChild(deleteBtn);
@@ -1836,6 +2087,7 @@ document.addEventListener("DOMContentLoaded", () => {
           showToast(result.message || "Changes saved successfully!", "success");
           excelChanges = {};
           previewSaveBtn.classList.add("hidden");
+          previewResponseCache.clear();
           // Re-load preview to display updated calculations / sheets
           await openPreview(currentFilename);
           // Reload library on index page to show updated date/size
