@@ -1,0 +1,1 @@
+Python with `openpyxl` for programmatic Excel generation, including styling, data validation, and multi-sheet workbooks.

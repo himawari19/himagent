@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Himagent — Local Test Plan Generator</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <!-- FontAwesome Icons for modern visuals -->
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+    <!-- Custom Style Sheet -->
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+
+  <body>
+    <div class="stars-bg"></div>
+    <div class="glow-orb orb-1"></div>
+    <div class="glow-orb orb-2"></div>
+
+    <div class="app-container">
+      <!-- Header Section -->
+      <header class="app-header">
+        <div class="logo-area">
+          <i class="fa-solid fa-wand-magic-sparkles logo-icon"></i>
+          <span class="logo-text">HIM<span class="accent-text">AGENT</span></span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px">
+          <a href="/dashboard" class="header-nav-link">
+            <i class="fa-solid fa-chart-bar"></i>
+            <span>Dashboard</span>
+          </a>
+          <div class="badge-status">
+            <span class="status-indicator online"></span>
+            <span>Local Engine Active</span>
+          </div>
+        </div>
+      </header>
+
+      <main class="main-content">
+        <!-- Hero Title -->
+        <section class="hero-section">
+          <h1 class="hero-title">Automated Test Plan Generator</h1>
+          <p class="hero-subtitle">
+            Upload any SUT screenshot to generate complete Excel test plans
+            and element matrices locally using Gemini.
+          </p>
+        </section>
+
+        <!-- Top Status/Info Container (Alternating Cards) -->
+        <div class="top-container">
+          <!-- Instructions Card (Placeholder when idle) -->
+          <div id="infoCard" class="glass-card info-card">
+            <h2 class="card-title">
+              <i class="fa-solid fa-circle-info header-icon text-accent"></i>
+              Guidelines & Standards
+            </h2>
+            <ul class="guidelines-list">
+              <li>
+                <i class="fa-solid fa-check"></i>
+                <div>
+                  <strong>Standard 2-Sheet Excel Format:</strong>
+                  <p>
+                    Produces sheets: TEST PLAN and SUMMARY.
+                  </p>
+                </div>
+              </li>
+              <li>
+                <i class="fa-solid fa-check"></i>
+                <div>
+                  <strong>Exhaustive QA Scenarios:</strong>
+                  <p>
+                    Covers functional checks, boundary values, security attacks, performance edge cases, accessibility (WCAG), and responsive layouts.
+                  </p>
+                </div>
+              </li>
+              <li>
+                <i class="fa-solid fa-check"></i>
+                <div>
+                  <strong>Formulas & Styling:</strong>
+                  <p>
+                    Includes dynamic Excel counts (COUNTIF, SUM) and standard
+                    colors (blue headers, conditional colors for
+                    Pass/Fail/Positive/Negative).
+                  </p>
+                </div>
+              </li>
+              <li>
+                <i class="fa-solid fa-check"></i>
+                <div>
+                  <strong>Python Script:</strong>
+                  <p>
+                    Saves a `.py` script that contains all generated test cases
+                    inside lists of tuples, capable of re-building the
+                    spreadsheet.
+                  </p>
+                </div>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Progress Card (Visible during generation) -->
+          <div id="progressCard" class="glass-card progress-card hidden">
+            <h2 class="card-title">
+              <i
+                class="fa-solid fa-spinner fa-spin header-icon text-accent"
+              ></i>
+              Generating Test Plan...
+            </h2>
+            <p class="progress-sub">
+              Executing LLM vision analysis and local openpyxl compilation.
+            </p>
+
+            <div class="progress-bar-container">
+              <div id="progressBar" class="progress-bar"></div>
+            </div>
+
+            <div class="console-logs">
+              <div class="console-header">
+                <span class="console-title"
+                  ><i class="fa-solid fa-terminal"></i> Log Output</span
+                >
+                <span class="console-status" id="consoleStatus">Running</span>
+              </div>
+              <div id="logOutput" class="log-output">
+                <div class="log-line info">
+                  Ready to process. Waiting for upload...
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Result Dashboard Card (Visible on success) -->
+          <div id="resultCard" class="glass-card result-card hidden">
+            <div class="success-header">
+              <div class="success-icon-circle">
+                <i class="fa-solid fa-circle-check"></i>
+              </div>
+              <h2 class="success-title">Generation Successful!</h2>
+              <p class="success-subtitle">
+                Your Excel workbook and Python script are ready.
+              </p>
+            </div>
+
+            <div class="metrics-grid" style="grid-template-columns: repeat(2, 1fr);">
+              <div class="metric-card">
+                <span class="metric-num" id="statCases">-</span>
+                <span class="metric-label">Test Cases</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-num">2</span>
+                <span class="metric-label">Worksheets</span>
+              </div>
+            </div>
+
+            <div class="output-files-list">
+              <div class="file-item">
+                <i class="fa-solid fa-file-excel file-icon excel"></i>
+                <div class="file-info">
+                  <span class="file-name" id="xlsxFilename"
+                    >testplan_custom.xlsx</span
+                  >
+                  <span class="file-dir">Saved locally in d:\QODER\</span>
+                </div>
+              </div>
+              <div class="file-item">
+                <i class="fa-solid fa-file-code file-icon python"></i>
+                <div class="file-info">
+                  <span class="file-name" id="pyFilename"
+                    >testplan_custom.py</span
+                  >
+                  <span class="file-dir">Saved locally in d:\QODER\</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="result-actions">
+              <a id="downloadBtn" href="#" class="btn-success">
+                <i class="fa-solid fa-circle-arrow-down btn-icon"></i>
+                <span>Download Excel File</span>
+              </a>
+              <a
+                id="downloadPyBtn"
+                href="#"
+                class="btn-success"
+                style="
+                  background: rgba(99, 102, 241, 0.12);
+                  color: #4f46e5;
+                  border: 1px solid rgba(99, 102, 241, 0.3);
+                  box-shadow: none;
+                "
+              >
+                <i class="fa-solid fa-file-code btn-icon"></i>
+                <span>Download Script</span>
+              </a>
+              <button id="resetBtn" class="btn-secondary">
+                <i class="fa-solid fa-rotate-left"></i>
+                <span>Generate Another</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Form Configuration Section (Full Width) -->
+        <form id="generatorForm" class="glass-card main-form">
+          <h2 class="card-title">
+            <i class="fa-solid fa-sliders header-icon"></i> Configuration
+          </h2>
+
+          <div class="form-left-col">
+            <!-- AI Provider and Model Selection (Visible by Default) -->
+            <div id="modelSelectionContainer" class="form-row">
+              <div class="form-group half-width">
+                <label for="provider_select">AI Provider</label>
+                <div class="input-wrapper">
+                  <i class="fa-solid fa-network-wired field-icon"></i>
+                  <select id="provider_select" name="provider">
+                    <option value="gemini" selected>Google Gemini</option>
+                    <option value="openai">OpenAI (GPT)</option>
+                    <option value="claude">Anthropic Claude</option>
+                    <option value="mimo">Xiaomi MiMo</option>
+                    <option value="deepseek">DeepSeek</option>
+                    <option value="grok">xAI Grok</option>
+                    <option value="mistral">Mistral AI</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-group half-width">
+                <label for="model_name"
+                  >AI Model Engine <span class="required">*</span></label
+                >
+                <div class="input-wrapper">
+                  <i class="fa-solid fa-brain field-icon"></i>
+                  <select id="model_name" name="model_name" required>
+                    <!-- Populated dynamically based on provider -->
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- API Key / Token input -->
+            <div class="form-group">
+              <div
+                style="
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                  margin-bottom: 8px;
+                "
+              >
+                <label for="api_key" id="api_key_label" style="margin-bottom: 0"
+                  >Gemini API Key</label
+                >
+                <span
+                  id="apiKeyStatus"
+                  class="api-key-status"
+                  style="display: none"
+                ></span>
+              </div>
+              <div class="input-wrapper">
+                <i class="fa-solid fa-key field-icon"></i>
+                <input
+                  type="password"
+                  id="api_key"
+                  name="api_key"
+                  autocomplete="new-password"
+                  data-lpignore="true"
+                  data-1p-ignore="true"
+                  placeholder="Paste your Gemini API key (falls back to server env variables if blank)"
+                />
+              </div>
+            </div>
+
+            <!-- Page / Module Details -->
+            <div class="form-row">
+              <div class="form-group half-width">
+                <label for="page_title"
+                  >Page / Module Title <span class="required">*</span></label
+                >
+                <div class="input-wrapper">
+                  <i class="fa-solid fa-file-signature field-icon"></i>
+                  <input
+                    type="text"
+                    id="page_title"
+                    name="page_title"
+                    placeholder="e.g. Login Page, Create Project Modal"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div class="form-group half-width">
+                <label for="id_prefix"
+                  >TC-ID Prefix <span class="required">*</span></label
+                >
+                <div class="input-wrapper">
+                  <i class="fa-solid fa-hashtag field-icon"></i>
+                  <input
+                    type="text"
+                    id="id_prefix"
+                    name="id_prefix"
+                    placeholder="e.g. TC-L-, TC-CP-, etc."
+                    required
+                  />
+                </div>
+              </div>
+            </div>
+
+            <!-- Generation Depth Option -->
+            <div class="form-row">
+              <div class="form-group half-width">
+                <label for="gen_depth">Generation Depth</label>
+                <div class="input-wrapper">
+                  <i class="fa-solid fa-sliders field-icon"></i>
+                  <select id="gen_depth" name="gen_depth">
+                    <option value="fast" selected>⚡ Fast Mode (15-20 test cases - fast response)</option>
+                    <option value="exhaustive">🔍 Exhaustive Mode (50-80 test cases - detailed response)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div class="form-group" id="instructionsGroup">
+              <div
+                style="
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                  margin-bottom: 8px;
+                "
+              >
+                <label for="instructions" style="margin-bottom: 0"
+                  >Custom Instructions / Context (Preset-Driven)</label
+                >
+                <button
+                  type="button"
+                  id="clearInstructionsBtn"
+                  class="btn-clear-instructions"
+                  title="Clear all instructions"
+                >
+                  <i class="fa-solid fa-eraser"></i> Clear
+                </button>
+              </div>
+              <div class="input-wrapper textarea-wrapper">
+                <i class="fa-solid fa-file-lines textarea-icon"></i>
+                <textarea
+                  id="instructions"
+                  name="instructions"
+                  rows="4"
+                  placeholder="Type custom instructions here, or click preset chips below to append…"
+                ></textarea>
+              </div>
+              <div class="preset-container">
+                <span class="preset-label">Quick Presets:</span>
+                <button
+                  type="button"
+                  class="preset-chip"
+                  data-text="Focus on functional flows, happy paths, button clicks, links navigation, form submissions, and expected success states."
+                >
+                  Functional Test
+                </button>
+                <button
+                  type="button"
+                  class="preset-chip"
+                  data-text="Focus on visual alignment, spacing, typography, colors, dark mode transitions, hover effects, and premium UI aesthetics."
+                >
+                  UI/UX &amp; Layout
+                </button>
+                <button
+                  type="button"
+                  class="preset-chip"
+                  data-text="Focus on boundary values, input constraints, maximum lengths, email/phone format validation, special characters, and required fields."
+                >
+                  Input &amp; Validation
+                </button>
+                <button
+                  type="button"
+                  class="preset-chip"
+                  data-text="Focus on security validation including XSS prevention, SQL injection, script embedding, session tokens, and input sanitization."
+                >
+                  Security &amp; Privacy
+                </button>
+                <button
+                  type="button"
+                  class="preset-chip"
+                  data-text="Focus on accessibility standards (WCAG 2.1 AA) including keyboard tab order, focus indicators, aria labels, and color contrast."
+                >
+                  Accessibility (WCAG)
+                </button>
+                <button
+                  type="button"
+                  class="preset-chip"
+                  data-text="Focus on responsive layouts across standard viewports (iPhone, Android, iPad), touch screen gestures, and portrait/landscape orientation."
+                >
+                  Mobile &amp; Responsive
+                </button>
+                <button
+                  type="button"
+                  class="preset-chip"
+                  data-text="Focus on page responsiveness under high latency (Slow 3G), server timeouts, rate limiting, rapid multi-clicks, and stress states."
+                >
+                  Performance &amp; Stress
+                </button>
+                <button
+                  type="button"
+                  class="preset-chip"
+                  data-text="Focus on internationalization including Unicode characters, CJK/Arabic language support, RTL layouts, and currency/date formatting."
+                >
+                  i18n &amp; Unicode
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="form-right-col">
+            <!-- Drag & Drop Upload Zone -->
+            <div class="form-group">
+              <label
+                >SUT Screenshots Upload (Max 10)
+                <span class="required">*</span></label
+              >
+              <div
+                id="dropZone"
+                class="drop-zone"
+                role="button"
+                tabindex="0"
+                aria-label="Upload SUT screenshots. Press Enter or Space to browse files."
+              >
+                <input
+                  type="file"
+                  id="screenshot"
+                  name="screenshot"
+                  accept="image/*"
+                  multiple
+                  hidden
+                />
+                <div class="drop-zone-content">
+                  <i class="fa-solid fa-cloud-arrow-up upload-icon"></i>
+                  <h3>Drag &amp; drop screenshot(s) here</h3>
+                  <p>
+                    or click to browse &bull; <strong>Ctrl+V</strong> to paste
+                    from clipboard
+                  </p>
+                  <span class="file-limits"
+                    >Supports JPEG, PNG, WEBP (Max 5MB per file &bull; Max 10
+                    screens)</span
+                  >
+                </div>
+                <div id="previewContainer" class="preview-container hidden">
+                  <div id="previewGrid" class="preview-grid"></div>
+                  <button
+                    type="button"
+                    id="removeImgBtn"
+                    class="btn-remove-img"
+                  >
+                    <i class="fa-solid fa-trash-can"></i> Clear All
+                  </button>
+                </div>
+              </div>
+              <!-- AI Detect Module Button -->
+              <button type="button" id="detectBtn" class="detect-btn hidden">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+                <span id="detectBtnText">Auto-Detect Module Type</span>
+              </button>
+              <!-- Suggestion Bar (shown after detection) -->
+              <div id="suggestionBar" class="suggestion-bar hidden"></div>
+            </div>
+
+            <button type="submit" id="submitBtn" class="btn-primary">
+              <span class="btn-text">Generate Test Plan</span>
+              <i class="fa-solid fa-arrow-right btn-icon"></i>
+            </button>
+          </div>
+        </form>
+
+        <!-- Generated Files Library Section -->
+        <div class="glass-card library-card">
+          <h2 class="card-title">
+            <i class="fa-solid fa-folder-open header-icon text-accent"></i>
+            <span>Generated Test Plans Explorer</span>
+            <button
+              id="refreshLibraryBtn"
+              class="btn-refresh"
+              type="button"
+              title="Refresh list"
+            >
+              <i class="fa-solid fa-arrows-rotate"></i>
+            </button>
+          </h2>
+          <p class="library-subtitle">
+            Browse and preview all generated Excel test plans and Python
+            recreate scripts saved in the local <code>outputs/</code> folder.
+          </p>
+
+          <div id="libraryList" class="library-list">
+            <!-- Dynamically generated list items -->
+            <div class="library-empty">
+              <i class="fa-regular fa-folder-open empty-icon"></i>
+              <p>
+                No generated files found in <code>outputs/</code> directory.
+              </p>
+            </div>
+          </div>
+        </div>
+
+      </main>
+
+      <footer class="app-footer">
+        <p>
+          Himagent Automated QA Suite — Designed for Vania Volare Creative
+          Platforms
+        </p>
+      </footer>
+    </div>
+
+    <!-- Modal Loader Overlay (Non-Closable) -->
+    <div id="loaderModal" class="modal-overlay hidden">
+      <div class="modal-content loader-content">
+        <div class="loader-header">
+          <div class="spinner-container">
+            <div class="glow-spinner"></div>
+            <i class="fa-solid fa-wand-magic-sparkles magic-icon-spinner"></i>
+          </div>
+          <h3 id="loaderTitle">Generating Test Plan</h3>
+          <p id="loaderSubtitle" style="display: none"></p>
+        </div>
+
+        <!-- Modern Stepper Indicator -->
+        <div class="loader-stepper">
+          <div class="step-item active" id="step1">
+            <div class="step-icon">
+              <i class="fa-solid fa-circle-notch fa-spin"></i>
+            </div>
+            <div class="step-label">Validate & Upload</div>
+          </div>
+          <div class="step-item" id="step2">
+            <div class="step-icon"><i class="fa-solid fa-circle"></i></div>
+            <div class="step-label">AI Vision Analysis</div>
+          </div>
+          <div class="step-item" id="step3">
+            <div class="step-icon"><i class="fa-solid fa-circle"></i></div>
+            <div class="step-label">Parse & Synthesize</div>
+          </div>
+          <div class="step-item" id="step4">
+            <div class="step-icon"><i class="fa-solid fa-circle"></i></div>
+            <div class="step-label">Writing Output Files</div>
+          </div>
+        </div>
+
+        <!-- Console Log Panel inside Loader -->
+        <div class="loader-console">
+          <div class="loader-console-header">
+            <span><i class="fa-solid fa-terminal"></i> Console Logs</span>
+            <span class="console-badge" id="loaderBadge">Processing</span>
+          </div>
+          <div id="loaderLogOutput" class="loader-log-output">
+            <!-- Logs dynamically appended here -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- File Preview Modal -->
+    <div id="previewModal" class="modal-overlay hidden">
+      <div class="modal-content preview-content">
+        <div class="preview-header">
+          <div class="preview-title-area">
+            <i
+              id="previewHeaderIcon"
+              class="fa-solid fa-file-excel file-icon"
+            ></i>
+            <h2 id="previewFilename">File Preview</h2>
+          </div>
+          <div class="preview-actions">
+            <button
+              id="previewCopyBtn"
+              class="btn-preview-action hidden"
+              title="Copy code"
+            >
+              <i class="fa-solid fa-copy"></i> <span>Copy Code</span>
+            </button>
+            <button
+              id="previewSaveBtn"
+              class="btn-preview-action save hidden"
+              style="background: rgba(34, 197, 94, 0.12); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.3);"
+              title="Save changes to Excel"
+            >
+              <i class="fa-solid fa-floppy-disk"></i> <span>Save Changes</span>
+            </button>
+            <button
+              id="closePreviewBtn"
+              class="btn-close-preview"
+              title="Close preview"
+            >
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+        </div>
+        <!-- Tab buttons for Excel Sheets (hidden for python) -->
+        <div id="excelTabs" class="excel-tabs hidden"></div>
+
+        <!-- Search bar & Export dropdowns for Excel Sheets (hidden for python) -->
+        <div id="previewSubHeader" class="preview-subheader hidden">
+          <div class="preview-search-wrapper">
+            <i class="fa-solid fa-magnifying-glass search-icon"></i>
+            <input
+              type="text"
+              id="previewSearchInput"
+              class="preview-search-input"
+              placeholder="Search test cases by keyword..."
+            />
+          </div>
+          <div class="export-dropdown-wrapper">
+            <button
+              type="button"
+              class="btn-preview-action export-toggle"
+              id="exportToggleBtn"
+            >
+              <i class="fa-solid fa-file-export"></i> <span>Export Plan</span>
+              <i class="fa-solid fa-chevron-down toggle-chevron"></i>
+            </button>
+            <div class="export-menu hidden" id="exportMenu">
+              <button type="button" class="export-item" data-format="csv">
+                <i class="fa-solid fa-file-csv"></i> Export as CSV
+              </button>
+              <button type="button" class="export-item" data-format="json">
+                <i class="fa-solid fa-code"></i> Export as JSON
+              </button>
+              <button type="button" class="export-item" data-format="markdown">
+                <i class="fa-brands fa-markdown"></i> Export as Markdown
+              </button>
+              <button type="button" class="export-item" data-format="html">
+                <i class="fa-solid fa-file-code"></i> Export as HTML
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="preview-body">
+          <!-- Code Viewer container (for python) -->
+          <div id="codeViewerContainer" class="code-viewer-container hidden">
+            <pre><code id="codeViewer"></code></pre>
+          </div>
+          <!-- Spreadsheet Grid container (for Excel) -->
+          <div id="excelViewerContainer" class="excel-viewer-container hidden">
+            <div class="excel-table-wrapper">
+              <table id="excelTable" class="excel-table"></table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div id="deleteModal" class="modal-overlay hidden">
+      <div class="modal-content delete-modal-content">
+        <div class="delete-modal-icon">
+          <i class="fa-solid fa-triangle-exclamation"></i>
+        </div>
+        <h2 class="delete-modal-title">Delete File?</h2>
+        <p class="delete-modal-desc">
+          Are you sure you want to delete <strong id="deleteFileName"></strong>?
+          This action cannot be undone.
+        </p>
+        <div class="delete-modal-actions">
+          <button id="deleteCancelBtn" class="btn-delete-cancel" type="button">
+            <i class="fa-solid fa-xmark"></i> Cancel
+          </button>
+          <button
+            id="deleteConfirmBtn"
+            class="btn-delete-confirm"
+            type="button"
+          >
+            <i class="fa-solid fa-trash"></i> Delete
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+    <!-- Toast Notification Container -->
+    <div
+      id="toastContainer"
+      style="
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        z-index: 99999;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        max-width: 420px;
+        pointer-events: none;
+      "
+    ></div>
+  </body>
+</html>

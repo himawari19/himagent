@@ -1,0 +1,4 @@
+- Test cases are defined as lists of tuples containing scenario, type, preconditions, steps, and expected results.
+- Excel styling is centralized via helper functions (`style_header`, `style_body`, `section_row`) to ensure consistent formatting across sheets.
+- Data validation rules (e.g., dropdowns for 'Case Type' or 'Status') are applied to specific column ranges in the generated Excel files.
+- Summary sheets dynamically calculate metrics (total tests, positive/negative counts) from the test case data structures before writing.
