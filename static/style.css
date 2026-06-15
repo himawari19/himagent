@@ -1504,9 +1504,175 @@ label {
   background: rgba(15, 23, 42, 0.08);
 }
 
-/* ============================================================================
-   PREVIEW MODAL SPECIFICS
-============================================================================ */
+.btn-lib-action.delete {
+  background: none;
+  color: var(--color-danger);
+  border: 1px solid rgba(220, 38, 38, 0.15);
+  padding: 6px 10px;
+}
+
+.btn-lib-action.delete:hover {
+  background: rgba(220, 38, 38, 0.08);
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
+/* ── Tree Accordion ── */
+.lib-module-block {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: var(--border-radius-md);
+  background: rgba(255,255,255,0.9);
+  overflow: hidden;
+  transition: box-shadow 0.2s;
+}
+
+.lib-module-block:hover {
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+}
+
+.lib-module-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+  background: rgba(109, 40, 217, 0.03);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  transition: background 0.15s;
+}
+
+.lib-module-header:hover {
+  background: rgba(109, 40, 217, 0.07);
+}
+
+.lib-folder-icon {
+  color: #f59e0b;
+  font-size: 15px;
+}
+
+.lib-module-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--color-text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.lib-module-meta {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  background: rgba(15, 23, 42, 0.05);
+  padding: 2px 8px;
+  border-radius: 20px;
+}
+
+.lib-chevron {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  transition: transform 0.2s ease;
+}
+
+.lib-module-body {
+  padding: 8px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Sub-folder (excel / scripts) */
+.lib-subfolder-block {
+  border-radius: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+}
+
+.lib-subfolder-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  background: rgba(15, 23, 42, 0.02);
+  user-select: none;
+  transition: background 0.15s;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-main);
+}
+
+.lib-subfolder-header:hover {
+  background: rgba(15, 23, 42, 0.05);
+}
+
+.lib-subfolder-header .excel {
+  color: #16a34a;
+}
+
+.lib-subfolder-header .python {
+  color: #2563eb;
+}
+
+.lib-sub-count {
+  margin-left: 4px;
+  font-size: 10px;
+  background: rgba(15, 23, 42, 0.07);
+  border-radius: 12px;
+  padding: 1px 7px;
+  color: var(--color-text-muted);
+}
+
+.lib-sub-chevron {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--color-text-muted);
+  transition: transform 0.2s ease;
+}
+
+.lib-subfolder-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+/* Custom premium scrollbar for subfolder bodies */
+.lib-subfolder-body::-webkit-scrollbar {
+  width: 6px;
+}
+.lib-subfolder-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.lib-subfolder-body::-webkit-scrollbar-thumb {
+  background: rgba(109, 40, 217, 0.15);
+  border-radius: 99px;
+}
+.lib-subfolder-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(109, 40, 217, 0.3);
+}
+
+/* Individual file row */
+.lib-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 14px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.04);
+  transition: background 0.15s;
+}
+
+.lib-file-row:last-child {
+  border-bottom: none;
+}
+
+.lib-file-row:hover {
+  background: rgba(109, 40, 217, 0.03);
+}
+
+
 .preview-content {
   max-width: 95vw;
   width: 1200px;

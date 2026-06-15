@@ -1,4 +1,0 @@
-- Entry points: `generate_testplan.py` and `generate_testplan_ai_image.py` serve as standalone scripts.
-- Internal structure: Each script defines styles, headers, and test case data structures before writing to multiple Excel sheets (Test Cases, Summary, Data Matrix/Element Matrix, QA Checklist).
-- Dependency direction: Scripts depend solely on the `openpyxl` library for Excel manipulation; no internal module dependencies exist.
-- Output artifacts: Generates `.xlsx` files (`TEST_PLAN_Create_Project.xlsx`, `TEST_PLAN_AI_Image_Generator.xlsx`) with predefined formatting, data validation, and frozen panes.

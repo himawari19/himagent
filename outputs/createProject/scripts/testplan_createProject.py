@@ -52,7 +52,10 @@ def main():
     ws_summary = build_summary_sheet(wb, sheet_title, summary_rows)
     apply_conditional_fmt(ws_tests, f"C2:C{last_row - 1}")
     
-    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testplan_createProject.xlsx")
+    base_name = os.path.splitext(os.path.basename(__file__))[0]
+    module_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", base_name)
+    os.makedirs(os.path.join(module_dir, "excel"), exist_ok=True)
+    output_path = os.path.join(module_dir, "excel", f"{base_name}.xlsx")
     wb.save(output_path)
     print(f"Saved: {output_path}")
 

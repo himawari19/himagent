@@ -937,8 +937,12 @@ Additional context or constraints: {instructions if instructions else 'None'}
         py_name = f"testplan_{filename_base}.py"
         
         outputs_dir = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'outputs')
-        xlsx_path = os.path.join(outputs_dir, xlsx_name)
-        py_path = os.path.join(outputs_dir, py_name)
+        # Create module‑specific folder under outputs
+        module_dir = os.path.join(outputs_dir, filename_base)
+        os.makedirs(os.path.join(module_dir, "excel"), exist_ok=True)
+        os.makedirs(os.path.join(module_dir, "scripts"), exist_ok=True)
+        xlsx_path = os.path.join(module_dir, "excel", xlsx_name)
+        py_path = os.path.join(module_dir, "scripts", py_name)
         
         # Build standard styled Excel file
         tc_count, ordered_cases = build_excel_file(page_title, id_prefix, test_cases_list, elements_list, checklist_list, xlsx_path, model_name=model_name, gen_depth=gen_depth)
@@ -969,15 +973,19 @@ Additional context or constraints: {instructions if instructions else 'None'}
             msg = str(e)
         return jsonify({'success': False, 'message': msg}), 500
 
+def find_file_in_outputs(filename):
+    """Search outputs/ recursively for a file matching filename. Returns full path or None."""
+    outputs_dir = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'outputs')
+    for root, dirs, filenames in os.walk(outputs_dir):
+        if filename in filenames:
+            return os.path.join(root, filename)
+    return None
+
 @app.route('/api/download/<filename>')
 def download_file(filename):
     filename = secure_filename(filename)
-    outputs_dir = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'outputs')
-    file_path = os.path.join(outputs_dir, filename)
-    if not os.path.exists(file_path):
-        # Fallback to root for backwards compatibility
-        file_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), filename)
-    if os.path.exists(file_path):
+    file_path = find_file_in_outputs(filename)
+    if file_path and os.path.exists(file_path):
         return send_file(file_path, as_attachment=True)
     return "File not found", 404
 
@@ -987,9 +995,8 @@ def delete_file(filename):
     """Delete a file from the outputs directory safely."""
     # Sanitize filename to prevent path traversal
     filename = secure_filename(filename)
-    outputs_dir = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'outputs')
-    file_path = os.path.join(outputs_dir, filename)
-    if not os.path.isfile(file_path):
+    file_path = find_file_in_outputs(filename)
+    if not file_path or not os.path.isfile(file_path):
         return jsonify({'success': False, 'message': f'File {filename} not found.'}), 404
     try:
         os.remove(file_path)
@@ -1005,30 +1012,57 @@ def list_files():
     try:
         outputs_dir = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'outputs')
         os.makedirs(outputs_dir, exist_ok=True)
-        files = []
-        for item in os.listdir(outputs_dir):
-            file_path = os.path.join(outputs_dir, item)
-            if os.path.isfile(file_path) and item.endswith('.xlsx'):
+
+        # Build tree: { module_name: { 'excel': [...], 'scripts': [...] } }
+        tree = {}
+        for root, dirs, filenames in os.walk(outputs_dir):
+            for item in filenames:
+                if not (item.endswith('.xlsx') or item.endswith('.py')):
+                    continue
+                file_path = os.path.join(root, item)
                 stat_info = os.stat(file_path)
-                files.append({
+                rel_path = os.path.relpath(file_path, outputs_dir).replace('\\', '/')
+                # rel_path format: module/excel/file.xlsx or module/scripts/file.py or file.ext (root level)
+                parts = rel_path.split('/')
+                if len(parts) >= 3:
+                    module_name = parts[0]
+                    folder_type = parts[1]  # 'excel' or 'scripts'
+                elif len(parts) == 2:
+                    module_name = parts[0]
+                    folder_type = 'excel' if item.endswith('.xlsx') else 'scripts'
+                else:
+                    module_name = 'other'
+                    folder_type = 'excel' if item.endswith('.xlsx') else 'scripts'
+
+                if module_name not in tree:
+                    tree[module_name] = {'excel': [], 'scripts': []}
+                if folder_type not in tree[module_name]:
+                    tree[module_name][folder_type] = []
+
+                tree[module_name][folder_type].append({
                     'name': item,
+                    'rel_path': rel_path,
                     'size': stat_info.st_size,
                     'modified': stat_info.st_mtime,
-                    'type': 'excel'
+                    'type': 'excel' if item.endswith('.xlsx') else 'python'
                 })
-        # Sort by modified time descending (newest first)
-        files.sort(key=lambda x: x['modified'], reverse=True)
-        return jsonify({'success': True, 'files': files})
+
+        # Sort files within each folder by modified desc
+        for module in tree:
+            for folder in tree[module]:
+                tree[module][folder].sort(key=lambda x: x['modified'], reverse=True)
+
+        return jsonify({'success': True, 'tree': tree})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
+
 
 @app.route('/api/preview/<filename>', methods=['GET'])
 def get_preview(filename):
     try:
         filename = secure_filename(filename)
-        outputs_dir = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'outputs')
-        file_path = os.path.join(outputs_dir, filename)
-        if not os.path.exists(file_path):
+        file_path = find_file_in_outputs(filename)
+        if not file_path or not os.path.exists(file_path):
             return jsonify({'success': False, 'message': f'File {filename} not found.'}), 404
             
         if filename.endswith('.py'):

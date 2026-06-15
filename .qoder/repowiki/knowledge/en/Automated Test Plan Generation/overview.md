@@ -1,1 +1,0 @@
-Generates comprehensive Excel-based test plans for web application modules using Python and openpyxl.

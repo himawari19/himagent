@@ -1,28 +1,23 @@
 import sys
 import os
 import openpyxl
-from core.sheets import build_testcase_sheet_create, build_summary_sheet, apply_conditional_fmt
-from data.createProject_cases import get_tests
+from core.sheets import build_testcase_sheet_v2, build_summary_sheet, apply_conditional_fmt
+from data.videoGen_cases import get_test_cases
 
 def main():
     wb = openpyxl.Workbook()
-    sheet_title = "TEST PLAN - Create Project"
+    sheet_title = "TEST PLAN - AI Video Generator"
     headers = ["TC-ID", "TEST SCENARIO", "CASE TYPE", "PRE-CONDITION", "STEP SCENARIO", "EXPECTED RESULT", "ACTUAL RESULT", "EVIDENCE"]
     col_widths = [10, 45, 14, 30, 60, 55, 18, 18]
     
-    tests = get_tests()
-    ws_tests, last_row = build_testcase_sheet_create(wb, sheet_title, headers, col_widths, tests)
+    test_cases = get_test_cases()
+    ws_tests, last_row = build_testcase_sheet_v2(wb, sheet_title, headers, col_widths, test_cases)
     
     # Summary rows
     grouped_areas = {}
-    for item in tests:
-        if item[0] == "SECTION":
-            continue
-        tc_id, case_type, precond, steps, expected = item
-        parts = tc_id.split(' | ', 1)
-        scenario = parts[1].strip() if len(parts) > 1 else tc_id
-        parts = scenario.split(' - ')
-        area = parts[0].strip().strip('[]') if len(parts) > 1 else "General"
+    for item in test_cases:
+        scenario = item[0]
+        area = scenario.split('.')[0]
         grouped_areas[area] = grouped_areas.get(area, 0) + 1
 
     summary_rows = [
@@ -52,7 +47,8 @@ def main():
     ws_summary = build_summary_sheet(wb, sheet_title, summary_rows)
     apply_conditional_fmt(ws_tests, f"C2:C{last_row - 1}")
     
-    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testplan_createProject.xlsx")
+    base_name = os.path.splitext(os.path.basename(__file__))[0]
+    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "excel", f"{base_name}.xlsx")
     wb.save(output_path)
     print(f"Saved: {output_path}")
 

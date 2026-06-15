@@ -881,76 +881,139 @@ document.addEventListener("DOMContentLoaded", () => {
       const libraryList = document.getElementById("libraryList");
       libraryList.innerHTML = "";
 
-      if (result.success && result.files && result.files.length > 0) {
-        result.files.forEach((file) => {
-          const item = document.createElement("div");
-          item.className = "library-item";
+      if (!result.success || !result.tree || Object.keys(result.tree).length === 0) {
+        libraryList.innerHTML = `
+          <div class="library-empty">
+            <i class="fa-regular fa-folder-open empty-icon"></i>
+            <p>No generated files found in <code>outputs/</code> directory.</p>
+          </div>`;
+        return;
+      }
 
-          const isExcel = file.type === "excel";
-          const iconClass = isExcel
-            ? "fa-file-excel excel"
-            : "fa-file-code python";
-          const formattedSize = (file.size / 1024).toFixed(1) + " KB";
+      const tree = result.tree;
 
-          // Format timestamp
-          const dateObj = new Date(file.modified * 1000);
-          const formattedDate =
-            dateObj.toLocaleDateString() +
-            " " +
-            dateObj.toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
+      Object.keys(tree).sort().forEach((moduleName) => {
+        const moduleData = tree[moduleName];
+        const excelFiles = moduleData.excel || [];
+        const scriptFiles = moduleData.scripts || [];
+        const totalFiles = excelFiles.length + scriptFiles.length;
+        if (totalFiles === 0) return;
+
+        // Module accordion block
+        const moduleBlock = document.createElement("div");
+        moduleBlock.className = "lib-module-block";
+
+        // Module header (clickable toggle)
+        const moduleHeader = document.createElement("div");
+        moduleHeader.className = "lib-module-header";
+        moduleHeader.innerHTML = `
+          <span class="lib-module-title">
+            <i class="fa-solid fa-folder lib-folder-icon"></i>
+            ${moduleName}
+          </span>
+          <span class="lib-module-meta">${totalFiles} file${totalFiles > 1 ? 's' : ''}</span>
+          <i class="fa-solid fa-chevron-down lib-chevron"></i>
+        `;
+        moduleBlock.appendChild(moduleHeader);
+
+        // Module body (collapsible)
+        const moduleBody = document.createElement("div");
+        moduleBody.className = "lib-module-body hidden";
+
+        // Helper to create a sub-folder accordion
+        function buildSubFolder(label, iconClass, colorClass, files) {
+          if (files.length === 0) return null;
+
+          const subBlock = document.createElement("div");
+          subBlock.className = "lib-subfolder-block";
+
+          const subHeader = document.createElement("div");
+          subHeader.className = "lib-subfolder-header";
+          subHeader.innerHTML = `
+            <i class="fa-solid ${iconClass} ${colorClass}"></i>
+            <span>${label}</span>
+            <span class="lib-sub-count">${files.length}</span>
+            <i class="fa-solid fa-chevron-right lib-sub-chevron"></i>
+          `;
+          subBlock.appendChild(subHeader);
+
+          const subBody = document.createElement("div");
+          subBody.className = "lib-subfolder-body hidden";
+
+          files.forEach((file) => {
+            const sizeKB = (file.size / 1024).toFixed(1) + " KB";
+            const dateObj = new Date(file.modified * 1000);
+            const dateStr = dateObj.toLocaleDateString() + " " + dateObj.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+            const fileRow = document.createElement("div");
+            fileRow.className = "lib-file-row";
+            fileRow.innerHTML = `
+              <div class="lib-file-details">
+                <i class="fa-solid ${file.type === 'excel' ? 'fa-file-excel excel' : 'fa-file-code python'} file-icon"></i>
+                <div class="lib-file-meta">
+                  <span class="lib-file-name">${file.name}</span>
+                  <span class="lib-file-sub">
+                    <span><i class="fa-solid fa-weight-hanging"></i> ${sizeKB}</span>
+                    <span><i class="fa-solid fa-clock"></i> ${dateStr}</span>
+                  </span>
+                </div>
+              </div>
+              <div class="lib-actions">
+                <button class="btn-lib-action preview" type="button"><i class="fa-solid fa-eye"></i> Preview</button>
+                <a href="/api/download/${file.name}" class="btn-lib-action download"><i class="fa-solid fa-download"></i> Download</a>
+                <button class="btn-lib-action delete" type="button"><i class="fa-solid fa-trash"></i></button>
+              </div>
+            `;
+
+            fileRow.querySelector(".preview").addEventListener("click", () => openPreview(file.name));
+            fileRow.querySelector(".delete").addEventListener("click", (e) => {
+              e.stopPropagation();
+              deleteFile(file.name, e.currentTarget);
             });
 
-          item.innerHTML = `
-                        <div class="lib-file-details">
-                            <i class="fa-solid ${iconClass} file-icon"></i>
-                            <div class="lib-file-meta">
-                                <span class="lib-file-name">${file.name}</span>
-                                <span class="lib-file-sub">
-                                    <span><i class="fa-solid fa-weight-hanging"></i> ${formattedSize}</span>
-                                    <span><i class="fa-solid fa-clock"></i> ${formattedDate}</span>
-                                </span>
-                            </div>
-                        </div>
-                        <div class="lib-actions">
-                            <button class="btn-lib-action preview" type="button">
-                                <i class="fa-solid fa-eye"></i> Preview
-                            </button>
-                            <a href="/api/download/${file.name}" class="btn-lib-action download">
-                                <i class="fa-solid fa-download"></i> Download
-                            </a>
-                            <button class="btn-lib-action delete" type="button">
-                                <i class="fa-solid fa-trash"></i>
-                            </button>
-                        </div>
-                    `;
-
-          // Bind event for preview
-          item.querySelector(".preview").addEventListener("click", () => {
-            openPreview(file.name);
+            subBody.appendChild(fileRow);
           });
 
-          // Bind delete button event
-          item.querySelector(".delete").addEventListener("click", (e) => {
-            e.stopPropagation();
-            deleteFile(file.name, e.currentTarget);
+          subBlock.appendChild(subBody);
+
+          // Toggle sub-folder on click
+          subHeader.addEventListener("click", () => {
+            const isOpen = !subBody.classList.contains("hidden");
+            subBody.classList.toggle("hidden", isOpen);
+            subHeader.querySelector(".lib-sub-chevron").style.transform = isOpen ? "rotate(0deg)" : "rotate(90deg)";
           });
 
-          libraryList.appendChild(item);
+          return subBlock;
+        }
+
+        const excelSub = buildSubFolder("excel", "fa-file-excel", "excel", excelFiles);
+        const scriptSub = buildSubFolder("scripts", "fa-file-code", "python", scriptFiles);
+        if (excelSub) moduleBody.appendChild(excelSub);
+        if (scriptSub) moduleBody.appendChild(scriptSub);
+
+        moduleBlock.appendChild(moduleBody);
+
+        // Toggle module on click
+        moduleHeader.addEventListener("click", () => {
+          const isOpen = !moduleBody.classList.contains("hidden");
+          moduleBody.classList.toggle("hidden", isOpen);
+          moduleHeader.querySelector(".lib-chevron").style.transform = isOpen ? "rotate(0deg)" : "rotate(180deg)";
+          moduleHeader.querySelector(".lib-folder-icon").className = `fa-solid ${isOpen ? 'fa-folder' : 'fa-folder-open'} lib-folder-icon`;
         });
-      } else {
-        libraryList.innerHTML = `
-                    <div class="library-empty">
-                        <i class="fa-regular fa-folder-open empty-icon"></i>
-                        <p>No generated files found in <code>outputs/</code> directory.</p>
-                    </div>
-                `;
-      }
+
+        // Default collapsed
+        moduleBody.classList.add("hidden");
+        moduleHeader.querySelector(".lib-chevron").style.transform = "rotate(0deg)";
+        moduleHeader.querySelector(".lib-folder-icon").className = "fa-solid fa-folder lib-folder-icon";
+
+        libraryList.appendChild(moduleBlock);
+      });
     } catch (error) {
       console.error("Error loading library:", error);
     }
   }
+
+
 
   function deleteFile(fileName, btn) {
     const deleteModal = document.getElementById("deleteModal");
