@@ -3,7 +3,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // TOAST NOTIFICATIONS
   // ═══════════════════════════════════════════════════════
   const toastContainer = document.getElementById("toastContainer");
-  const TOAST_ICONS = { success: "✅", error: "❌", warning: "⚠️", info: "ℹ️" };
+  const TOAST_ICONS = {
+    success: '<i class="fa-solid fa-circle-check"></i>',
+    error: '<i class="fa-solid fa-circle-xmark"></i>',
+    warning: '<i class="fa-solid fa-triangle-exclamation"></i>',
+    info: '<i class="fa-solid fa-circle-info"></i>',
+  };
   const TOAST_TITLES = {
     success: "Success",
     error: "Error",
@@ -15,12 +20,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const toast = document.createElement("div");
     toast.className = `toast ${type}`;
     toast.innerHTML = `
-            <span class="toast-icon">${TOAST_ICONS[type] || "ℹ️"}</span>
+            <span class="toast-icon">${TOAST_ICONS[type] || TOAST_ICONS.info}</span>
             <div class="toast-body">
                 <div class="toast-title">${TOAST_TITLES[type] || type}</div>
                 <div class="toast-msg">${message}</div>
             </div>
-            <button class="toast-close" onclick="this.closest('.toast').remove()">✕</button>`;
+            <button class="toast-close" type="button" aria-label="Dismiss toast" onclick="this.closest('.toast').remove()">&times;</button>`;
     toastContainer.appendChild(toast);
     setTimeout(() => {
       toast.classList.add("removing");
@@ -62,10 +67,18 @@ document.addEventListener("DOMContentLoaded", () => {
   const infoCard = document.getElementById("infoCard");
 
   const statCases = document.getElementById("statCases");
+  const statChecklist = document.getElementById("statChecklist");
+  const statSheets = document.getElementById("statSheets");
+  const statMode = document.getElementById("statMode");
+  const reportProvider = document.getElementById("reportProvider");
+  const reportModel = document.getElementById("reportModel");
+  const reportRepair = document.getElementById("reportRepair");
+  const reportWarnings = document.getElementById("reportWarnings");
   const xlsxFilename = document.getElementById("xlsxFilename");
   const pyFilename = document.getElementById("pyFilename");
   const pyFileRow = document.getElementById("pyFileRow");
   const downloadBtn = document.getElementById("downloadBtn");
+  const previewResultBtn = document.getElementById("previewResultBtn");
   const downloadPyBtn = document.getElementById("downloadPyBtn");
   const resetBtn = document.getElementById("resetBtn");
 
@@ -198,47 +211,47 @@ document.addEventListener("DOMContentLoaded", () => {
       badge: "Gemini",
       badgeClass: "gemini",
       placeholder:
-        "Paste your Gemini API key — get it at aistudio.google.com/apikey",
+        "Paste your Gemini API key - get it from aistudio.google.com/apikey",
     },
     openai: {
       label: "OpenAI API Key",
       badge: "OpenAI",
       badgeClass: "openai",
       placeholder:
-        "Paste your OpenAI API key (starts with sk-...) — platform.openai.com",
+        "Paste your OpenAI API key (starts with sk-...) - platform.openai.com",
     },
     claude: {
       label: "Anthropic API Key",
       badge: "Claude",
       badgeClass: "claude",
       placeholder:
-        "Paste your Anthropic API key (starts with sk-ant-...) — console.anthropic.com",
+        "Paste your Anthropic API key (starts with sk-ant-...) - console.anthropic.com",
     },
     mimo: {
       label: "MiMo API Key",
       badge: "MiMo",
       badgeClass: "mimo",
-      placeholder: "Paste your Xiaomi MiMo API key — mimo.xiaomi.com",
+      placeholder: "Paste your Xiaomi MiMo API key - mimo.xiaomi.com",
     },
     deepseek: {
       label: "DeepSeek API Key",
       badge: "DeepSeek",
       badgeClass: "deepseek",
       placeholder:
-        "Paste your DeepSeek API key — platform.deepseek.com/api_keys",
+        "Paste your DeepSeek API key - platform.deepseek.com/api_keys",
     },
     grok: {
       label: "xAI API Key",
       badge: "Grok",
       badgeClass: "grok",
       placeholder:
-        "Paste your xAI API key (starts with xai-...) — console.x.ai",
+        "Paste your xAI API key (starts with xai-...) - console.x.ai",
     },
     mistral: {
       label: "Mistral API Key",
       badge: "Mistral",
       badgeClass: "mistral",
-      placeholder: "Paste your Mistral API key — console.mistral.ai",
+      placeholder: "Paste your Mistral API key - console.mistral.ai",
     },
   };
 
@@ -262,9 +275,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     apiKeyStatus.style.display = "inline-flex";
     const cfg = {
-      checking: { text: "● Checking…", color: "#94a3b8" },
-      connected: { text: "● Connected", color: "#10b981" },
-      failed: { text: "● Unreachable", color: "#ef4444" },
+      checking: { text: "Checking...", color: "#0f766e" },
+      connected: { text: "Connected", color: "#10b981" },
+      failed: { text: "Unreachable", color: "#ef4444" },
     };
     const c = cfg[state] || cfg.failed;
     apiKeyStatus.textContent = c.text;
@@ -314,7 +327,6 @@ document.addEventListener("DOMContentLoaded", () => {
   // ═══════════════════════════════════════════════════════
   // PRESET CHIPS — toggle-based with visual active state
   // ═══════════════════════════════════════════════════════
-  const activePresets = {}; // chip → data-text mapping
 
   document.querySelectorAll(".preset-chip").forEach((chip) => {
     chip.addEventListener("click", () => {
@@ -556,31 +568,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Fun rotating subtitle messages
   const funMessages = [
-    "🧪 Brewing a potion of test scenarios...",
-    "🔬 Examining every pixel like a detective...",
-    "🎯 Preparing dynamic QA scenarios for your test plan...",
-    "📋 Counting buttons... there are a LOT of buttons...",
-    "🧠 AI is thinking really hard right now...",
-    "☕ The AI grabbed a coffee, give it a sec...",
-    "🎨 Painting each cell in your spreadsheet with love...",
-    "🐛 Hunting bugs before they even exist...",
-    "🚀 Almost there! The test cases are taking off...",
-    "📊 Building the most beautiful Excel you've ever seen...",
-    "🤖 Teaching robots to break your UI (in a good way)...",
-    "🧩 Solving the puzzle of your test coverage...",
-    "🏗️ Constructing your QA fortress, brick by brick...",
-    "🎪 Juggling Positive, Negative, and Boundary cases...",
-    "🔍 Inspecting UI elements with a magnifying glass...",
-    "📝 Writing test steps so good, QA will cry happy tears...",
-    "🌈 Sprinkling WCAG accessibility magic everywhere...",
-    "⚡ Stress-testing your patience (and your app)...",
-    "🛡️ Crafting XSS attacks for your own protection...",
-    "📱 Making sure it works on phones, tablets, even a fridge...",
-    "🎭 Role-playing as 6 different browsers simultaneously...",
-    "🔧 Fine-tuning edge cases that nobody thinks about...",
-    "🎵 Humming a tune while generating your workbook...",
-    "🧲 Attracting all the corner cases from the shadows...",
-    "🏎️ Racing through cross-browser compatibility checks...",
+    "Analyzing screenshots and building test coverage...",
+    "Reading layout, controls, and interaction states...",
+    "Preparing detailed QA scenarios for the workbook...",
+    "Checking boundaries, security cases, and edge states...",
+    "Mapping responsive and accessibility coverage...",
+    "Writing workbook sheets and summary metrics...",
+    "Normalizing results for a consistent output format...",
+    "Finishing final validation before files are saved...",
   ];
   let subtitleInterval = null;
 
@@ -660,8 +655,8 @@ document.addEventListener("DOMContentLoaded", () => {
     loaderModal.classList.remove("hidden");
     loaderModal.style.setProperty("--loader-progress", "0%");
     loaderBadge.textContent = "PROCESSING";
-    loaderBadge.style.background = "rgba(109, 40, 217, 0.2)";
-    loaderBadge.style.color = "#a78bfa";
+    loaderBadge.style.background = "rgba(15, 118, 110, 0.12)";
+    loaderBadge.style.color = "#0f766e";
 
     // Update step 2 label dynamically to match selected provider
     step2Label.textContent = `${providerName} Vision Analysis`;
@@ -729,7 +724,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // Step 1 → 2: Done validating, now connecting to AI
       if (progressVal >= 10 && !logsTriggered.step1Done) {
         addLog(
-          "Screenshots encrypted & uploaded to memory buffer ✓",
+          "Screenshots uploaded to memory buffer - OK",
           "success",
         );
         setStepState(step1, "completed");
@@ -758,21 +753,21 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       if (progressVal >= 48 && !logsTriggered.step2Mid3) {
         addLog(
-          "AI generating exhaustive test scenarios... (this takes a moment)",
+          "AI is generating detailed test scenarios...",
           "info",
         );
         logsTriggered.step2Mid3 = true;
       }
       if (progressVal >= 58 && !logsTriggered.step2Mid4) {
         addLog(
-          "Synthesizing Positive, Negative & Boundary case coverage...",
+          "Synthesizing Positive, Negative, and Boundary coverage...",
           "info",
         );
         logsTriggered.step2Mid4 = true;
       }
       if (progressVal >= 66 && !logsTriggered.step2Mid5) {
         addLog(
-          "Compiling WCAG 2.1 AA audits & cross-browser checks...",
+          "Compiling WCAG 2.1 AA and cross-browser checks...",
           "info",
         );
         logsTriggered.step2Mid5 = true;
@@ -782,14 +777,14 @@ document.addEventListener("DOMContentLoaded", () => {
       // Triggers every ~15 ticks (~9 seconds) once past 50%
       if (progressVal >= 50 && progressVal < 75 && tickCount % 15 === 0) {
         const heartbeats = [
-          `Still waiting for ${providerName} response... hang tight! ⏳`,
-          "AI is crunching through all those edge cases... 🧠",
-          "Generating security & accessibility test scenarios... 🛡️",
-          "This usually takes 30-90 seconds depending on complexity... ⏱️",
-          `${providerName} is building your 50+ test cases... almost there! 🔄`,
-          "Cross-checking mobile responsive & performance scenarios... 📱",
-          "The more elements detected, the longer it takes (but the better the result!) 💪",
-          "Patience is a QA virtue... your test plan will be worth it! ✨",
+          `Still waiting for ${providerName} response...`,
+          "AI is working through edge cases and coverage.",
+          "Generating security and accessibility test scenarios...",
+          "This can take 30-90 seconds depending on complexity.",
+          `${providerName} is building your test cases... almost there.`,
+          "Cross-checking mobile and performance scenarios...",
+          "The more elements detected, the more detailed the result.",
+          "Patience pays off here. The output is nearly ready.",
         ];
         const heartbeatIdx = Math.floor(tickCount / 15) % heartbeats.length;
         addLog(heartbeats[heartbeatIdx], "info");
@@ -831,15 +826,14 @@ document.addEventListener("DOMContentLoaded", () => {
       // Update title to success message
       loaderTitle.style.opacity = "0";
       setTimeout(() => {
-        loaderTitle.textContent =
-          "🎉 Your test plan is ready! Check it out below.";
+        loaderTitle.textContent = "Your test plan is ready. Review the results below.";
         loaderTitle.style.opacity = "1";
       }, 300);
 
       // Animate remaining steps 2→3→4 with realistic log messages
       // Step 2: AI response received
       addLog(
-        `${providerMeta[providerSelect.value]?.badge || "AI"} response received ✓`,
+        `${providerMeta[providerSelect.value]?.badge || "AI"} response received - OK`,
         "success",
       );
       setStepState(step1, "completed");
@@ -860,7 +854,7 @@ document.addEventListener("DOMContentLoaded", () => {
             "Structuring and grouping test scenarios...",
             "info",
           );
-          addLog("Test case synthesis complete ✓", "success");
+          addLog("Test case synthesis complete - OK", "success");
           setStepState(step3, "completed");
           setStepState(step4, "active");
           progressBar.style.width = "94%";
@@ -878,14 +872,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
             setTimeout(() => {
               addLog(
-                "Saving .xlsx and .py files to outputs/ folder...",
+                "Saving workbook files to outputs/...",
                 "success",
               );
               progressBar.style.width = "100%";
               loaderModal.style.setProperty("--loader-progress", "100%");
               setStepState(step4, "completed");
               addLog(
-                "✅ Generation complete! All files ready in outputs/ folder.",
+                "Generation complete. Files are ready in outputs/.",
                 "success",
               );
 
@@ -898,7 +892,7 @@ document.addEventListener("DOMContentLoaded", () => {
               const closeBtn = document.createElement("button");
               closeBtn.className = "btn-done";
               closeBtn.innerHTML =
-                '<i class="fa-solid fa-rocket"></i> Your plan is ready — Let\'s go!';
+                '<i class="fa-solid fa-rocket"></i> Your plan is ready. Open the results below.';
               closeBtn.type = "button";
               closeBtn.addEventListener("click", () => {
                 loaderModal.classList.add("hidden");
@@ -927,8 +921,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // Update title to error
       loaderTitle.style.opacity = "0";
       setTimeout(() => {
-        loaderTitle.textContent =
-          "😞 Something went wrong. Check the error below.";
+        loaderTitle.textContent = "Something went wrong. Check the error below.";
         loaderTitle.style.opacity = "1";
       }, 300);
 
@@ -960,7 +953,7 @@ document.addEventListener("DOMContentLoaded", () => {
       dismissBtn.style.cssText =
         "margin-top:20px;width:100%;justify-content:center;background:rgba(239,68,68,0.08);color:#dc2626;border-color:rgba(239,68,68,0.3)";
       dismissBtn.innerHTML =
-        '<i class="fa-solid fa-xmark"></i> Dismiss & Try Again';
+        "Dismiss and try again";
       dismissBtn.type = "button";
       dismissBtn.addEventListener("click", () => {
         loaderModal.classList.add("hidden");
@@ -1811,8 +1804,27 @@ document.addEventListener("DOMContentLoaded", () => {
       if (result.success) {
         const finalizeResult = (jobResult) => {
           statCases.textContent = jobResult.test_case_count;
+          statChecklist.textContent = jobResult.checklist_count ?? "-";
+          statSheets.textContent = jobResult.sheet_count ?? "2";
+          const modeLabel = {
+            fast: "Fast",
+            ultra: "Ultra Fast",
+            exhaustive: "Exhaustive",
+          }[jobResult.generation_mode || genDepthSelect?.value] || "Fast";
+          statMode.textContent = modeLabel;
+          reportProvider.textContent = jobResult.provider || providerSelect.value || "-";
+          reportModel.textContent = jobResult.model_name || modelNameSelect.value || "-";
+          reportRepair.textContent = `${jobResult.auto_repair_count ?? 0} fixes`;
+          const warnings = Array.isArray(jobResult.quality_warnings)
+            ? jobResult.quality_warnings.filter(Boolean)
+            : [];
+          reportWarnings.textContent = warnings.length ? warnings.join(", ") : "None";
           xlsxFilename.textContent = jobResult.xlsx_file;
           downloadBtn.href = jobResult.download_url;
+          previewResultBtn.disabled = !jobResult.xlsx_file;
+          previewResultBtn.onclick = () => {
+            if (jobResult.xlsx_file) openPreview(jobResult.xlsx_file);
+          };
           if (jobResult.py_file) {
             pyFilename.textContent = jobResult.py_file;
             if (pyFileRow) pyFileRow.style.display = "";
@@ -1887,6 +1899,12 @@ document.addEventListener("DOMContentLoaded", () => {
     if (pyFileRow) pyFileRow.style.display = "none";
     downloadPyBtn.style.display = "none";
     downloadPyBtn.setAttribute("aria-hidden", "true");
+    reportProvider.textContent = "-";
+    reportModel.textContent = "-";
+    reportRepair.textContent = "0 fixes";
+    reportWarnings.textContent = "None";
+    previewResultBtn.disabled = true;
+    previewResultBtn.onclick = null;
 
     progressBar.style.width = "0%";
   });
@@ -2106,3 +2124,8 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 });
+
+
+
+
+

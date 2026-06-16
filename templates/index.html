@@ -17,37 +17,7 @@
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
     />
     <!-- Custom Style Sheet -->
-    <link rel="stylesheet" href="/static/style.css?v=1781522016" />
-    <style>
-      .instructions-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 8px;
-      }
-
-      .instructions-label {
-        margin-bottom: 0;
-      }
-
-      .header-actions {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-      }
-
-      .toast-container {
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        z-index: 99999;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        max-width: 420px;
-        pointer-events: none;
-      }
-    </style>
+    <link rel="stylesheet" href="/static/style.css?v=1781522017" />
   </head>
 
   <body>
@@ -67,7 +37,7 @@
         <div class="header-actions">
           <div class="badge-status">
             <span class="status-indicator online"></span>
-            <span>Local Engine Active</span>
+            <span>Local engine ready</span>
           </div>
         </div>
       </header>
@@ -77,9 +47,9 @@
         <section class="hero-section">
           <h1 class="hero-title">Automated Test Plan Generator</h1>
           <p class="hero-subtitle">
-            Upload one or more SUT screenshots to generate complete Excel test
-            plans and optional recreate scripts locally with your selected AI
-            provider.
+            Upload SUT screenshots, choose a provider, and generate structured
+            Excel test plans with detailed coverage, clear traceability, and an
+            optional recreate script.
           </p>
         </section>
 
@@ -95,39 +65,41 @@
               <li>
                 <i class="fa-solid fa-check"></i>
                 <div>
-                  <strong>Current Workbook Format:</strong>
-                  <p>Produces a TEST PLAN sheet and a SUMMARY sheet for each run.</p>
-                </div>
-              </li>
-              <li>
-                <i class="fa-solid fa-check"></i>
-                <div>
-                  <strong>Exhaustive QA Coverage:</strong>
+                  <strong>Workbook output:</strong>
                   <p>
-                    Covers functional checks, boundary values, security attacks,
-                    performance edge cases, accessibility (WCAG), responsive
-                    layouts, and localization edge cases.
+                    Each run produces a TEST PLAN sheet, a SUMMARY sheet, and
+                    consistent workbook styling for fast review.
                   </p>
                 </div>
               </li>
               <li>
                 <i class="fa-solid fa-check"></i>
                 <div>
-                  <strong>Dynamic Metrics & Styling:</strong>
+                  <strong>Coverage model:</strong>
                   <p>
-                    Includes live summary counts, workbook metrics, blue
-                    headers, and conditional colors for pass/fail and case
-                    type labels.
+                    Focuses on functional checks, boundaries, security, WCAG,
+                    responsive behavior, performance, and localization edge
+                    cases.
                   </p>
                 </div>
               </li>
               <li>
                 <i class="fa-solid fa-check"></i>
                 <div>
-                  <strong>Optional Recreate Script:</strong>
+                  <strong>Result summary:</strong>
                   <p>
-                    Can save a `.py` recreate script when requested, but the
-                    fast path now focuses on the Excel workbook.
+                    Includes live summary counts, workbook metrics, and a
+                    consistent visual hierarchy for quick scanning.
+                  </p>
+                </div>
+              </li>
+              <li>
+                <i class="fa-solid fa-check"></i>
+                <div>
+                  <strong>Optional recreate script:</strong>
+                  <p>
+                    Save a `.py` recreate script when needed, or keep the flow
+                    focused on the workbook only.
                   </p>
                 </div>
               </li>
@@ -142,8 +114,8 @@
               ></i>
               Generating Test Plan...
             </h2>
-            <p class="progress-sub">
-              Executing LLM vision analysis and local openpyxl compilation.
+              <p class="progress-sub">
+              Running AI vision analysis and writing the workbook locally.
             </p>
 
             <div class="progress-bar-container">
@@ -172,42 +144,47 @@
                 <i class="fa-solid fa-circle-check"></i>
               </div>
               <h2 class="success-title">Generation Successful!</h2>
-              <p class="success-subtitle">Your workbook and download files are ready.</p>
+              <p class="success-subtitle">
+                Your workbook is ready with structured test coverage and
+                downloadable artifacts.
+              </p>
             </div>
 
-            <!-- Local style moved from inline to avoid inline-styles warning -->
-            <style>
-              /* Scoped style for this metrics grid */
-              .metrics-grid.two-columns {
-                grid-template-columns: repeat(2, 1fr);
-              }
-              .hidden {
-                display: none;
-              }
-              .btn-secondary {
-                background: rgba(99, 102, 241, 0.12);
-                color: #4f46e5;
-                border: 1px solid rgba(99, 102, 241, 0.3);
-                box-shadow: none;
-              }
-              .api-key-row {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 8px;
-              }
-              .api-key-row label {
-                margin-bottom: 0;
-              }
-            </style>
-            <div class="metrics-grid two-columns">
+            <div class="metrics-grid metrics-grid--four">
               <div class="metric-card">
                 <span class="metric-num" id="statCases">-</span>
                 <span class="metric-label">Test Cases</span>
               </div>
               <div class="metric-card">
-                <span class="metric-num">2</span>
+                <span class="metric-num" id="statChecklist">-</span>
+                <span class="metric-label">Checklist Items</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-num" id="statSheets">2</span>
                 <span class="metric-label">Worksheets</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-num" id="statMode">Fast</span>
+                <span class="metric-label">Mode</span>
+              </div>
+            </div>
+
+            <div class="generation-report" aria-label="Generation report">
+              <div class="report-item">
+                <span class="report-label">Provider</span>
+                <span class="report-value" id="reportProvider">-</span>
+              </div>
+              <div class="report-item">
+                <span class="report-label">Model</span>
+                <span class="report-value" id="reportModel">-</span>
+              </div>
+              <div class="report-item">
+                <span class="report-label">Auto-Repair</span>
+                <span class="report-value" id="reportRepair">0 fixes</span>
+              </div>
+              <div class="report-item report-item--wide">
+                <span class="report-label">Warnings</span>
+                <span class="report-value" id="reportWarnings">None</span>
               </div>
             </div>
 
@@ -218,7 +195,7 @@
                   <span class="file-name" id="xlsxFilename"
                     >testplan_custom.xlsx</span
                   >
-                  <span class="file-dir">Saved locally in outputs/</span>
+                  <span class="file-dir">Stored in `outputs/`</span>
                 </div>
               </div>
               <div class="file-item hidden" id="pyFileRow">
@@ -227,7 +204,7 @@
                   <span class="file-name" id="pyFilename"
                     >testplan_custom.py</span
                   >
-                  <span class="file-dir">Saved locally in outputs/</span>
+                  <span class="file-dir">Stored in `outputs/`</span>
                 </div>
               </div>
             </div>
@@ -237,6 +214,10 @@
                 <i class="fa-solid fa-circle-arrow-down btn-icon"></i>
                 <span>Download Workbook</span>
               </a>
+              <button id="previewResultBtn" type="button" class="btn-secondary">
+                <i class="fa-solid fa-table btn-icon"></i>
+                <span>Preview Workbook</span>
+              </button>
               <a
                 id="downloadPyBtn"
                 href="#"
@@ -355,13 +336,13 @@
                   <i class="fa-solid fa-sliders field-icon"></i>
                   <select id="gen_depth" name="gen_depth">
                     <option value="fast" selected>
-                      ⚡ Fast Mode (10-15 test cases - fast response)
+                      Fast Mode (10-15 test cases - fast response)
                     </option>
                     <option value="ultra">
-                      🚀 Ultra Fast Mode (5-8 test cases - quickest response)
+                      Ultra Fast Mode (5-8 test cases - quickest response)
                     </option>
                     <option value="exhaustive">
-                      🔍 Exhaustive Mode (50-80 test cases - detailed response)
+                      Exhaustive Mode (50-80 test cases - detailed response)
                     </option>
                   </select>
                 </div>
@@ -399,7 +380,7 @@
                   id="instructions"
                   name="instructions"
                   rows="4"
-                  placeholder="Type custom instructions here, or click preset chips below to append…"
+                  placeholder="Type custom instructions here, or click preset chips below to append..."
                 ></textarea>
               </div>
               <div class="preset-container">
@@ -528,7 +509,7 @@
         <div class="glass-card library-card">
           <h2 class="card-title">
             <i class="fa-solid fa-folder-open header-icon text-accent"></i>
-            <span>Generated Test Plans Explorer</span>
+            <span>Generated Plans</span>
             <button
               id="refreshLibraryBtn"
               class="btn-refresh"
@@ -539,8 +520,8 @@
             </button>
           </h2>
           <p class="library-subtitle">
-            Browse and preview generated Excel test plans and any optional
-            recreate scripts saved in the local <code>outputs/</code> folder.
+            Browse and preview generated Excel plans and optional recreate
+            scripts saved in the local <code>outputs/</code> folder.
           </p>
 
           <div id="libraryList" class="library-list">
@@ -548,7 +529,7 @@
             <div class="library-empty">
               <i class="fa-regular fa-folder-open empty-icon"></i>
               <p>
-                No generated files found in <code>outputs/</code> directory.
+                No generated files found in <code>outputs/</code> yet.
               </p>
             </div>
           </div>
@@ -556,9 +537,7 @@
       </main>
 
       <footer class="app-footer">
-        <p>
-          Himagent Automated QA Suite
-        </p>
+        <p>Himagent local QA workspace</p>
       </footer>
     </div>
 
@@ -570,7 +549,7 @@
             <div class="glow-spinner"></div>
             <i class="fa-solid fa-wand-magic-sparkles magic-icon-spinner"></i>
           </div>
-          <h3 id="loaderTitle">Generating Test Plan</h3>
+          <h3 id="loaderTitle">Preparing test plan</h3>
           <p id="loaderSubtitle" class="hidden"></p>
         </div>
 
@@ -580,7 +559,7 @@
             <div class="step-icon">
               <i class="fa-solid fa-circle-notch fa-spin"></i>
             </div>
-            <div class="step-label">Validate & Upload</div>
+            <div class="step-label">Validate and upload</div>
           </div>
           <div class="step-item" id="step2">
             <div class="step-icon"><i class="fa-solid fa-circle"></i></div>
@@ -588,18 +567,18 @@
           </div>
           <div class="step-item" id="step3">
             <div class="step-icon"><i class="fa-solid fa-circle"></i></div>
-            <div class="step-label">Parse & Synthesize</div>
+            <div class="step-label">Parse and synthesize</div>
           </div>
           <div class="step-item" id="step4">
             <div class="step-icon"><i class="fa-solid fa-circle"></i></div>
-            <div class="step-label">Writing Output Files</div>
+            <div class="step-label">Write output files</div>
           </div>
         </div>
 
         <!-- Console Log Panel inside Loader -->
         <div class="loader-console">
           <div class="loader-console-header">
-            <span><i class="fa-solid fa-terminal"></i> Console Logs</span>
+            <span><i class="fa-solid fa-terminal"></i> Console logs</span>
             <span class="console-badge" id="loaderBadge">Processing</span>
           </div>
           <div id="loaderLogOutput" class="loader-log-output">
@@ -610,13 +589,6 @@
     </div>
 
     <!-- File Preview Modal -->
-    <style>
-      .btn-preview-action.save {
-        background: rgba(34, 197, 94, 0.12);
-        color: #22c55e;
-        border: 1px solid rgba(34, 197, 94, 0.3);
-      }
-    </style>
     <div id="previewModal" class="modal-overlay hidden">
       <div class="modal-content preview-content">
         <div class="preview-header">
@@ -633,7 +605,7 @@
               class="btn-preview-action hidden"
               title="Copy code"
             >
-              <i class="fa-solid fa-copy"></i> <span>Copy Code</span>
+              <i class="fa-solid fa-copy"></i> <span>Copy</span>
             </button>
             <button
               id="previewSaveBtn"
@@ -641,7 +613,7 @@
               class="btn-preview-action save hidden"
               title="Save changes to Excel"
             >
-              <i class="fa-solid fa-floppy-disk"></i> <span>Save Changes</span>
+              <i class="fa-solid fa-floppy-disk"></i> <span>Save changes</span>
             </button>
             <button
               id="closePreviewBtn"
@@ -677,16 +649,16 @@
             </button>
             <div class="export-menu hidden" id="exportMenu">
               <button type="button" class="export-item" data-format="csv">
-                <i class="fa-solid fa-file-csv"></i> Export as CSV
+                <i class="fa-solid fa-file-csv"></i> Export CSV
               </button>
               <button type="button" class="export-item" data-format="json">
-                <i class="fa-solid fa-code"></i> Export as JSON
+                <i class="fa-solid fa-code"></i> Export JSON
               </button>
               <button type="button" class="export-item" data-format="markdown">
-                <i class="fa-brands fa-markdown"></i> Export as Markdown
+                <i class="fa-brands fa-markdown"></i> Export Markdown
               </button>
               <button type="button" class="export-item" data-format="html">
-                <i class="fa-solid fa-file-code"></i> Export as HTML
+                <i class="fa-solid fa-file-code"></i> Export HTML
               </button>
             </div>
           </div>
@@ -737,3 +709,6 @@
     <div id="toastContainer" class="toast-container"></div>
   </body>
 </html>
+
+
+

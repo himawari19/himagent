@@ -2,7 +2,6 @@ import os
 import re
 import json
 import traceback
-import shutil
 import hashlib
 import threading
 import sqlite3
@@ -17,7 +16,6 @@ from PIL import Image
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.formatting.rule import CellIsRule
 import google.generativeai as genai
 try:
@@ -25,13 +23,13 @@ try:
 except ImportError:
     google_exceptions = None
 from pydantic import BaseModel, Field
-from typing import List, Literal
+from typing import Literal
 from cryptography.fernet import Fernet
 from uuid import uuid4
 
-# ───────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # EPHEMERAL ENCRYPTION KEY (generated fresh each server start)
-# ───────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _FERNET_KEY = Fernet.generate_key()
 _fernet = Fernet(_FERNET_KEY)
 
@@ -41,28 +39,16 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # Disable static file caching in de
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB max upload
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# ───────────────────────────────────────────────────
-# INITIALIZE OUTPUTS FOLDER AND COPY PRE-EXISTING EXCEL FILES
-# ───────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# OUTPUT DIRECTORY INIT
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def init_outputs_dir():
     root_dir = os.path.abspath(os.path.dirname(__file__))
     outputs_dir = os.path.join(root_dir, 'outputs')
     os.makedirs(outputs_dir, exist_ok=True)
-    # Copy pre-existing testplan spreadsheets in root to outputs so they appear in library.
-    # Sample/static generator scripts are not part of the main app runtime.
-    for item in os.listdir(root_dir):
-        if item.startswith('testplan_') and item.endswith('.xlsx'):
-            src = os.path.join(root_dir, item)
-            dst = os.path.join(outputs_dir, item)
-            if os.path.isfile(src):
-                # Copy if destination doesn't exist, or source is newer
-                if not os.path.exists(dst) or os.path.getmtime(src) > os.path.getmtime(dst):
-                    try:
-                        shutil.copy2(src, dst)
-                    except Exception as e:
-                        print(f"Error copying existing file {item}: {e}")
 
 init_outputs_dir()
+
 
 _GENERATION_LOCK = threading.Lock()
 _GENERATION_JOBS = {}
@@ -102,6 +88,8 @@ def _init_generation_store():
             """
         )
         conn.commit()
+
+_init_generation_store()
 
 
 def _db_row_to_dict(row):
@@ -175,23 +163,6 @@ def _db_upsert_job(job_id, state):
     return merged
 
 
-def _db_set_cache(cache_key, result):
-    now = datetime.utcnow().isoformat()
-    payload = json.dumps(result, ensure_ascii=False)
-    with sqlite3.connect(_GENERATION_DB_PATH) as conn:
-        conn.execute(
-            """
-            INSERT INTO generation_cache (cache_key, result_json, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(cache_key) DO UPDATE SET
-                result_json=excluded.result_json,
-                updated_at=excluded.updated_at
-            """,
-            (cache_key, payload, now, now),
-        )
-        conn.commit()
-
-
 def _db_get_cache(cache_key):
     if not os.path.exists(_GENERATION_DB_PATH):
         return None
@@ -231,17 +202,23 @@ def _deserialize_payload(payload_json):
     ]
     return raw
 
+def _normalize_ai_response(data):
+    """Coerce AI responses into the dict shape expected by the generators."""
+    if isinstance(data, list):
+        return {'test_cases': data}
+    if not isinstance(data, dict):
+        raise Exception(f"Unexpected AI response type: {type(data).__name__}")
 
-def _load_cached_result(cache_key):
-    with _GENERATION_LOCK:
-        cached = _GENERATION_CACHE.get(cache_key)
-    if cached:
-        return cached
-    cached = _db_get_cache(cache_key)
-    if cached:
-        with _GENERATION_LOCK:
-            _GENERATION_CACHE[cache_key] = cached
-    return cached
+    if 'test_cases' in data:
+        return data
+
+    for value in data.values():
+        if isinstance(value, dict) and 'test_cases' in value:
+            return value
+
+    return data
+
+
 
 
 def _preview_cache_key(file_path):
@@ -293,36 +270,6 @@ def _count_test_cases_from_workbook(file_path):
     except Exception:
         return 0
 
-def _fallback_model_candidates(provider, model_name):
-    candidates = {
-        'gemini': ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-        'openai': ['gpt-5.4-mini', 'gpt-4o'],
-        'claude': ['claude-haiku-4-5', 'claude-sonnet-4-6'],
-        'mimo': ['mimo-v2-flash', 'mimo-v2.5'],
-        'deepseek': ['deepseek-v4-flash', 'deepseek-v4-pro'],
-        'grok': ['grok-build-0.1', 'grok-4.3'],
-        'mistral': ['mistral-small-4', 'mistral-medium-3-5'],
-    }
-    seen = set()
-    ordered = []
-    for candidate in [model_name, *candidates.get(provider, [])]:
-        if candidate and candidate not in seen:
-            seen.add(candidate)
-            ordered.append(candidate)
-    return ordered
-
-
-def _module_prompt_hint(page_title):
-    title = (page_title or "").lower()
-    if "create" in title and "project" in title:
-        return "Module hint: form-driven project creation with fields, dropdowns, validation, modal behavior, and submission states."
-    if "image" in title and "generator" in title:
-        return "Module hint: image generation workflow with model selection, uploads, prompt input, advanced options, and output actions."
-    if "video" in title and "generator" in title:
-        return "Module hint: video generation workflow with frame uploads, duration, aspect ratio, resolution, audio, and player actions."
-    return "Module hint: generic web application workflow."
-
-
 def _store_job_state(job_id, state):
     state_to_store = dict(state)
     if 'payload' in state_to_store and state_to_store['payload'] is not None:
@@ -331,9 +278,9 @@ def _store_job_state(job_id, state):
         state_to_store['result_json'] = json.dumps(state_to_store.pop('result'), ensure_ascii=False)
     return _db_upsert_job(job_id, state_to_store)
 
-# ═══════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # PYDANTIC SCHEMAS FOR STRUCTURED GEMINI OUTPUT
-# ═══════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class TestCaseSchema(BaseModel):
     tc_id: str = Field(description="Unique sequential identifier for the test case (e.g. TC-L-001, TC-L-002, etc.)")
@@ -353,12 +300,10 @@ class ChecklistSchema(BaseModel):
     category: str = Field(description="Checklist Category (UI/UX Layout, Functional, Accessibility (WCAG), Security, Cross-Browser, Mobile Responsive, Performance, Session/Auth)")
     checklist_item: str = Field(description="Manual checklist item description starting with 'Verify that...'")
 
-class SUTAnalysisSchema(BaseModel):
-    test_cases: List[TestCaseSchema] = Field(description="Exhaustive list of test cases (aim for 30-50 cases covering all inputs, error handling, edge cases, and non-functional requirements)")
 
-# ═══════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # SYSTEM PROMPT FOR GEMINI
-# ═══════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 SYSTEM_PROMPT = """
 You are Antigravity, a professional QA Lead and Automation Expert.
@@ -372,6 +317,7 @@ Follow these strict requirements:
    - Example: "Navbar Logo - Verify clicking Vania logo navigates to homepage"
    - Example: "Model Search - No Results"
    - Keep this format strictly. Preserve uppercase acronyms: XSS, SQL, CSRF, WCAG, RTL, CJK, EXIF, API, URL, UI, UX, HTML, HTTP.
+   - Do not leave scenario, precondition, steps, expected result, or evidence blank in the final JSON.
 2. TC-ID FORMAT:
    - Use the prefix provided by the user (e.g. TC-I-, TC-V-, TC-L-) followed by a 3-digit sequential number.
    - Example: TC-I-001, TC-I-002, ... (NOT TC-001)
@@ -379,12 +325,12 @@ Follow these strict requirements:
    - Positive: Valid flows, standard user inputs, success paths.
    - Negative: Invalid inputs, error validations, security attacks (XSS injection, SQL injection, script tags, carriage returns, RTL override, SVG script embedding), content moderation filters.
    - Boundary: Edge values, character limits (max/min length, empty inputs, spaces only), rapid clicks, double submissions, already-selected states.
-4. MANDATORY TEST COVERAGE — include ALL of the following:
+4. MANDATORY TEST COVERAGE â€” include ALL of the following:
    a. Functional: every visible interactive element (buttons, inputs, dropdowns, toggles, uploads, links)
    b. Collapse/Expand headers: if ANY collapsible section headers exist (e.g. Duration, Aspect Ratio, Resolution, Audio, Prompt Library, Model), test both expanded AND collapsed states separately
    c. File Upload edge cases (if upload elements present): valid file, invalid type, max file size exceeded, zero-byte file, corrupted file, double extension (.jpg.exe), SVG with embedded script, EXIF metadata stripping
    d. Security: XSS in text fields, SQL injection payloads, RTL Unicode override (U+202E), CJK/Arabic Unicode input, zero-width characters
-   e. Accessibility: WCAG 2.1 AA — keyboard tab navigation, visible focus rings, screen reader labels (aria-label), color contrast >= 4.5:1
+   e. Accessibility: WCAG 2.1 AA - keyboard tab navigation, visible focus rings, screen reader labels (aria-label), color contrast >= 4.5:1
    f. Cross-Browser: Chrome, Firefox, Safari, Edge, Opera, Samsung Internet
    g. Mobile & Responsive: iPhone SE (375px), Galaxy S20 (412px), iPad Mini (768px); portrait/landscape orientation changes, touch gestures
    h. Performance: Slow 3G latency, server timeout, rate limiting after rapid submissions, Time-to-Interactive threshold
@@ -427,6 +373,7 @@ Follow these strict requirements:
    - Example: "Navbar Logo - Verify clicking Vania logo navigates to homepage"
    - Example: "Model Search - No Results"
    - Keep this format strictly. Preserve uppercase acronyms: XSS, SQL, CSRF, WCAG, RTL, CJK, EXIF, API, URL, UI, UX, HTML, HTTP.
+   - Do not leave scenario, precondition, steps, expected result, or evidence blank in the final JSON.
 2. TC-ID FORMAT:
    - Use the prefix provided by the user (e.g. TC-I-, TC-V-, TC-L-) followed by a 3-digit sequential number.
    - Example: TC-I-001, TC-I-002, ... (NOT TC-001)
@@ -434,7 +381,7 @@ Follow these strict requirements:
    - Positive: Valid flows, standard user inputs, success paths.
    - Negative: Invalid inputs, error validations, security attacks (XSS injection, SQL injection, script tags, carriage returns, RTL override, SVG script embedding), content moderation filters.
    - Boundary: Edge values, character limits (max/min length, empty inputs, spaces only), rapid clicks, double submissions, already-selected states.
-4. MANDATORY TEST COVERAGE — cover primary cases of:
+4. MANDATORY TEST COVERAGE â€” cover primary cases of:
    a. Functional: core visible interactive elements (buttons, inputs, dropdowns, toggles, uploads)
    b. Collapse/Expand headers: if collapsible section headers exist, test basic expanded and collapsed states
    c. File Upload (if present): basic valid/invalid files and size limit
@@ -545,7 +492,7 @@ def _run_generation_pipeline(payload, job_id=None):
         max_images = 3 if gen_depth == 'ultra' else (5 if gen_depth == 'fast' else 10)
         max_side = 256 if gen_depth == 'ultra' else (384 if gen_depth == 'fast' else 512)
         for file_item in uploaded_files[:max_images]:
-            pil_img = Image.open(BytesIO(file_item["bytes"]))
+            pil_img = Image.open(BytesIO(file_item.get("bytes", b"")))
             w, h = pil_img.size
             if max(w, h) > max_side:
                 scale = max_side / max(w, h)
@@ -609,34 +556,100 @@ def _run_generation_pipeline(payload, job_id=None):
         base64_images = [pil_to_base64_jpeg(img, max_side=256 if gen_depth == 'ultra' else (384 if gen_depth == 'fast' else 512)) for img in pil_images]
         data = call_openai_compatible_api("https://api.mistral.ai/v1", model_name, api_key, sys_prompt, prompt, base64_images, provider="Mistral")
 
+    data = _normalize_ai_response(data)
     if not data:
         raise Exception("No data returned from AI Model engine.")
 
-    def normalize_tc(d):
+    module_name = page_title.strip() or 'the module'
+
+    repair_stats = {
+        'filled_fields': 0,
+        'case_type_fixed': 0,
+        'steps_numbered': 0,
+        'duplicates_removed': 0,
+        'invalid_rows_skipped': 0,
+    }
+
+    def _fill(value, fallback):
+        if value:
+            return value
+        repair_stats['filled_fields'] += 1
+        return fallback
+
+    def normalize_tc(d, index):
+        scenario = (d.get('scenario') or d.get('test_scenario') or d.get('title') or d.get('name') or '').strip()
+        case_type_raw = (d.get('case_type') or d.get('type') or d.get('test_type') or 'Positive').strip()
+        precondition = (d.get('precondition') or d.get('pre_condition') or d.get('prerequisites') or '').strip()
+        steps = (d.get('steps') or d.get('step_scenario') or d.get('test_steps') or d.get('actions') or '').strip()
+        expected = (d.get('expected') or d.get('expected_result') or d.get('expected_results') or d.get('result') or '').strip()
+
+        case_type_map = {
+            'positive': 'Positive',
+            'negative': 'Negative',
+            'boundary': 'Boundary',
+        }
+        case_type = case_type_map.get(case_type_raw.lower())
+        if not case_type:
+            case_type = 'Positive'
+            repair_stats['case_type_fixed'] += 1
+
+        scenario_label = scenario or f'{module_name} Generated Scenario {index}'
+        scenario = _fill(scenario, f'{module_name} - Generated Scenario {index}')
+        if ' - ' not in scenario:
+            scenario = f'{module_name} - {scenario}'
+            repair_stats['filled_fields'] += 1
+        precondition = _fill(precondition, f'The {module_name} page is open and the required UI is available.')
+        if not steps:
+            steps = (
+                f'1. Open {module_name}.\n'
+                f'2. Execute the action described in {scenario_label}.\n'
+                f'3. Verify the resulting UI or data state.'
+            )
+            repair_stats['filled_fields'] += 1
+        elif not re.match(r'^\s*\d+\.', steps):
+            step_lines = [line.strip() for line in re.split(r'\r?\n+', steps) if line.strip()]
+            if not step_lines:
+                step_lines = [steps]
+            steps = '\n'.join(f'{line_no}. {line}' for line_no, line in enumerate(step_lines, 1))
+            repair_stats['steps_numbered'] += 1
+        expected = _fill(expected, f'The {module_name} flow completes successfully and shows the expected result for {scenario_label}.')
+
         return {
-            'tc_id':        d.get('tc_id') or d.get('id') or d.get('test_id') or '',
-            'scenario':     d.get('scenario') or d.get('test_scenario') or d.get('title') or d.get('name') or '',
-            'case_type':    d.get('case_type') or d.get('type') or d.get('test_type') or 'Positive',
-            'precondition': d.get('precondition') or d.get('pre_condition') or d.get('prerequisites') or '',
-            'steps':        d.get('steps') or d.get('step_scenario') or d.get('test_steps') or d.get('actions') or '',
-            'expected':     d.get('expected') or d.get('expected_result') or d.get('expected_results') or d.get('result') or '',
+            'tc_id': d.get('tc_id') or d.get('id') or d.get('test_id') or '',
+            'scenario': scenario,
+            'case_type': case_type,
+            'precondition': precondition,
+            'steps': steps,
+            'expected': expected,
         }
 
-    if 'test_cases' not in data:
-        for key in data:
-            if isinstance(data[key], dict) and 'test_cases' in data[key]:
-                data = data[key]
-                break
-
     test_cases_list = []
-    for tc_data in data.get('test_cases', []):
+    seen_scenarios = set()
+    for index, tc_data in enumerate(data.get('test_cases', []), 1):
+        if not isinstance(tc_data, dict):
+            repair_stats['invalid_rows_skipped'] += 1
+            continue
         try:
-            test_cases_list.append(TestCaseSchema(**normalize_tc(tc_data)))
+            normalized_tc = normalize_tc(tc_data, index)
+            scenario_key = normalized_tc['scenario'].strip().lower()
+            if scenario_key in seen_scenarios:
+                repair_stats['duplicates_removed'] += 1
+                continue
+            seen_scenarios.add(scenario_key)
+            test_cases_list.append(TestCaseSchema(**normalized_tc))
         except Exception:
-            pass
+            repair_stats['invalid_rows_skipped'] += 1
 
     if not test_cases_list:
         raise Exception("AI returned no valid test cases. The model may have responded in an unexpected format. Try again or use a different model.")
+
+    quality_warnings = []
+    case_types = {tc.case_type for tc in test_cases_list}
+    for required_type in ('Positive', 'Negative', 'Boundary'):
+        if required_type not in case_types:
+            quality_warnings.append(f'Missing {required_type} case coverage')
+    if len(test_cases_list) < 5:
+        quality_warnings.append('Very low test case count')
 
     elements_list = []
     checklist_list = []
@@ -678,14 +691,23 @@ def _run_generation_pipeline(payload, job_id=None):
     return {
         'test_case_count': tc_count,
         'checklist_count': checklist_target,
+        'sheet_count': 2,
         'xlsx_file': xlsx_name,
         'py_file': py_name,
         'download_url': f'/api/download/{xlsx_name}',
+        'preview_url': f'/api/preview/{xlsx_name}',
+        'provider': provider,
+        'model_name': model_name,
+        'generation_mode': gen_depth,
+        'auto_repair_count': sum(repair_stats.values()),
+        'repair_stats': repair_stats,
+        'skipped_count': repair_stats['invalid_rows_skipped'] + repair_stats['duplicates_removed'],
+        'quality_warnings': quality_warnings,
+        'generated_at': datetime.utcnow().isoformat(),
     }
 
-# ═══════════════════════════════════════════════════════
 # MULTI-PROVIDER HELPER UTILITIES & SCHEMAS
-# ═══════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def pil_to_base64_jpeg(pil_img, max_side=512):
     if pil_img.mode in ("RGBA", "P"):
@@ -715,50 +737,50 @@ def parse_api_error(status_code, response_text, provider=""):
 
     if status_code == 401:
         return (
-            f"❌ Authentication Failed (401) — Your {provider.upper() or 'API'} key is invalid or has been revoked. "
+            f"Authentication Failed (401) - Your {provider.upper() or 'API'} key is invalid or has been revoked. "
             "Please check your API key and try again."
         )
     if status_code == 403:
         if any(k in body_lower for k in ["subscription", "plan", "upgrade", "billing", "paid", "premium", "tier"]):
             return (
-                f"🔒 Access Denied (403) — This model requires a paid subscription or higher plan on {provider.upper()}. "
+                f"Access Denied (403) - This model requires a paid subscription or higher plan on {provider.upper()}. "
                 "Please upgrade your account or choose a different model."
             )
         return (
-            f"🔒 Access Denied (403) — Your account does not have permission to use this model. "
+            f"Access Denied (403) - Your account does not have permission to use this model. "
             f"{'Check your billing or subscription tier.' if p in ('openai','claude','gemini','mistral','grok') else 'Contact your API provider.'}"
         )
     if status_code == 429:
         if any(k in body_lower for k in ["quota", "exceeded", "limit reached", "daily", "monthly"]):
             return (
-                f"⛔ Quota Exceeded (429) — You have hit your usage quota on {provider.upper()}. "
+                f"Quota Exceeded (429) - You have hit your usage quota on {provider.upper()}. "
                 "Please check your billing dashboard or wait for your quota to reset."
             )
         return (
-            f"⏱ Rate Limited (429) — Too many requests sent to {provider.upper()}. "
+            f"Rate Limited (429) - Too many requests sent to {provider.upper()}. "
             "Please wait a moment and try again, or reduce request frequency."
         )
     if status_code == 402:
         return (
-            f"💳 Payment Required (402) — Insufficient credits or billing issue on {provider.upper()}. "
+            f"Payment Required (402) - Insufficient credits or billing issue on {provider.upper()}. "
             "Please top up your account balance."
         )
     if status_code == 404:
         return (
-            f"🔍 Model Not Found (404) — The selected model is not available on your {provider.upper()} account. "
+            f"Model Not Found (404) - The selected model is not available on your {provider.upper()} account. "
             "It may require a specific subscription tier or has been deprecated. Try a different model."
         )
     if status_code == 422:
         return (
-            f"⚠️ Invalid Request (422) — The request was rejected by {provider.upper()}. "
+            f"Invalid Request (422) - The request was rejected by {provider.upper()}. "
             f"{nested_msg or 'Check your input parameters or model configuration.'}"
         )
     if status_code == 500:
-        return f"🔥 Server Error (500) — {provider.upper() or 'The AI provider'} is experiencing internal issues. Please try again later."
+        return f"Server Error (500) - {provider.upper() or 'The AI provider'} is experiencing internal issues. Please try again later."
     if status_code == 503:
-        return f"🚧 Service Unavailable (503) — {provider.upper() or 'The AI provider'} is temporarily down or overloaded. Please try again in a few minutes."
+        return f"Service Unavailable (503) - {provider.upper() or 'The AI provider'} is temporarily down or overloaded. Please try again in a few minutes."
     if status_code == 529:
-        return f"🚧 Overloaded (529) — {provider.upper()} is currently overloaded. Please try again later."
+        return f"Overloaded (529) - {provider.upper()} is currently overloaded. Please try again later."
 
     # Fallback with nested message if available
     detail = f": {nested_msg}" if nested_msg else f": {body[:200]}" if body else ""
@@ -770,26 +792,26 @@ def parse_gemini_exception(e):
     msg = str(e).lower()
     if google_exceptions:
         if isinstance(e, google_exceptions.ResourceExhausted):
-            return "⛔ Quota Exceeded — You have hit your Gemini API quota. Check your billing dashboard or wait for the quota to reset."
+            return "Quota Exceeded - You have hit your Gemini API quota. Check your billing dashboard or wait for the quota to reset."
         if isinstance(e, google_exceptions.PermissionDenied):
-            return "🔒 Access Denied — Your Gemini API key does not have permission to use this model. It may require a paid plan."
+            return "Access Denied - Your Gemini API key does not have permission to use this model. It may require a paid plan."
         if isinstance(e, google_exceptions.Unauthenticated):
-            return "❌ Authentication Failed — Your Gemini API key is invalid or has been revoked."
+            return "Authentication Failed - Your Gemini API key is invalid or has been revoked."
         if isinstance(e, google_exceptions.NotFound):
-            return "🔍 Model Not Found — The selected Gemini model is not available on your account or has been deprecated."
+            return "Model Not Found - The selected Gemini model is not available on your account or has been deprecated."
         if isinstance(e, google_exceptions.InvalidArgument):
-            return f"⚠️ Invalid Request — {str(e)}"
+            return f"Invalid Request - {str(e)}"
         if isinstance(e, google_exceptions.ServiceUnavailable):
-            return "🚧 Service Unavailable — Gemini API is temporarily down. Please try again later."
+            return "Service Unavailable - Gemini API is temporarily down. Please try again later."
     # Fallback: keyword match on message string
     if "quota" in msg or "resource exhausted" in msg:
-        return "⛔ Quota Exceeded — You have hit your Gemini API quota. Check your billing dashboard or wait for reset."
+            return "Quota Exceeded - You have hit your Gemini API quota. Check your billing dashboard or wait for the quota to reset."
     if "permission" in msg or "forbidden" in msg:
-        return "🔒 Access Denied — Your Gemini API key does not have permission for this model."
+            return "Access Denied - Your Gemini API key does not have permission to use this model. It may require a paid plan."
     if "api key" in msg or "unauthenticated" in msg or "invalid key" in msg:
-        return "❌ Authentication Failed — Your Gemini API key is invalid or revoked."
+        return "Authentication Failed - Your Gemini API key is invalid or has been revoked."
     if "not found" in msg or "404" in msg:
-        return "🔍 Model Not Found — This Gemini model is unavailable on your account."
+            return "Model Not Found - This Gemini model is unavailable on your account."
     return f"Gemini Error: {str(e)}"
 
 
@@ -957,9 +979,9 @@ def call_claude_api(model_name, api_key, system_prompt, prompt, base64_images):
     )
     return tool_use["input"]
 
-# ═══════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # HELPER FUNCTIONS TO BUILD EXCEL FILE
-# ═══════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def build_excel_file(title, prefix, test_cases, elements, checklist, output_path, model_name="gemini-3.5-flash", gen_depth="exhaustive"):
     wb = openpyxl.Workbook()
@@ -997,9 +1019,9 @@ def build_excel_file(title, prefix, test_cases, elements, checklist, output_path
         for col in range(2, max_col + 1):
             ws.cell(row=row, column=col).border = thin_border
 
-    # ───────────────────────────────────────────────────
-    # SHEET 1 — TEST PLAN
-    # ───────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # SHEET 1 â€” TEST PLAN
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     ws1 = wb.active
     sheet1_title = f"TEST PLAN - {title}"
     if len(sheet1_title) > 30:
@@ -1026,7 +1048,7 @@ def build_excel_file(title, prefix, test_cases, elements, checklist, output_path
             grouped_cases[area] = []
         grouped_cases[area].append(tc)
 
-    # Flat ordered list matching Excel write order — used for sequential TC-ID
+    # Flat ordered list matching Excel write order â€” used for sequential TC-ID
     ordered_cases = [tc for cases in grouped_cases.values() for tc in cases]
 
     current_row = 2
@@ -1042,14 +1064,14 @@ def build_excel_file(title, prefix, test_cases, elements, checklist, output_path
             ws1.cell(row=current_row, column=5, value=tc.steps)
             ws1.cell(row=current_row, column=6, value=tc.expected)
             ws1.cell(row=current_row, column=7, value="") # Actual result empty
-            ws1.cell(row=current_row, column=8, value="—") # Evidence placeholder
+            ws1.cell(row=current_row, column=8, value="") # Evidence placeholder
             style_body(ws1, current_row, len(headers1))
             current_row += 1
             tc_counter += 1
 
-    # ───────────────────────────────────────────────────
-    # SHEET 2 — SUMMARY
-    # ───────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # SHEET 2 â€” SUMMARY
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     ws2 = wb.create_sheet("SUMMARY")
     for c, h in enumerate(["METRIC", "VALUE"], 1):
         cell = ws2.cell(row=1, column=c, value=h)
@@ -1110,9 +1132,9 @@ def build_excel_file(title, prefix, test_cases, elements, checklist, output_path
     except Exception as e:
         print(f"Error adding chart to Excel: {e}")
 
-    # ───────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # CONDITIONAL FORMATTING
-    # ───────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     green_fill  = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
     red_fill    = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
     yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
@@ -1125,9 +1147,9 @@ def build_excel_file(title, prefix, test_cases, elements, checklist, output_path
     wb.save(output_path)
     return current_row - 2, ordered_cases
 
-# ═══════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # HELPER TO GENERATE SELF-CONTAINED PYTHON SCRIPT
-# ═══════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def build_python_script(title, prefix, test_cases, elements, checklist, output_path, filename_base, model_name="gemini-3.5-flash", gen_depth="exhaustive"):
     """Generate a thin Python script that imports from core/ modules to recreate the workbook."""
@@ -1209,7 +1231,7 @@ from core.sheets import (
     build_testcase_sheet_v2, build_summary_sheet, apply_conditional_fmt
 )
 
-# ── Data ──────────────────────────────────────────────────────────────────────
+# â”€â”€ Data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 SHEET_TITLE = {repr(sheet1_title)}
 HEADERS     = {repr(HEADERS)}
 COL_WIDTHS  = {repr(COL_WIDTHS)}
@@ -1233,7 +1255,7 @@ def _to_v2_format(rows):
 
 SUMMARY    = {repr(summary_rows_repr)}
 
-# ── Build ─────────────────────────────────────────────────────────────────────
+# â”€â”€ Build â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 wb = openpyxl.Workbook()
 
 ws_tests, last_row = build_testcase_sheet_v2(
@@ -1252,9 +1274,9 @@ print(f"Test cases: {{len(TEST_CASES)}}")
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(script_content)
 
-# ═══════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # FLASK WEB ENDPOINTS
-# ═══════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 @app.route('/')
 def home():
@@ -1325,7 +1347,7 @@ def generate_test_plan():
         user_api_key = request.form.get('api_key', '').strip()
         req_provider = request.form.get('provider', '').strip()
         gen_depth = request.form.get('gen_depth', 'fast').strip().lower()
-        if gen_depth not in ['fast', 'exhaustive']:
+        if gen_depth not in ['ultra', 'fast', 'exhaustive']:
             gen_depth = 'fast'
         generate_script = request.form.get('generate_script', '0').strip().lower() in ('1', 'true', 'yes', 'on')
 
@@ -1415,175 +1437,6 @@ def generate_test_plan():
             'message': 'Generation queued.',
         }), 202
             
-        sys_prompt = get_system_prompt(gen_depth)
-        
-        provider = detect_provider(req_provider, model_name, user_api_key)
-        
-        # Configure API key with Env fallbacks
-        api_key = user_api_key if (user_api_key and user_api_key.lower() != 'env') else ""
-        if not api_key:
-            if provider == 'gemini':
-                api_key = os.environ.get("GEMINI_API_KEY", "")
-            elif provider == 'openai':
-                api_key = os.environ.get("OPENAI_API_KEY", "")
-            elif provider == 'claude':
-                api_key = os.environ.get("ANTHROPIC_API_KEY", "") or os.environ.get("CLAUDE_API_KEY", "")
-            elif provider == 'mimo':
-                api_key = os.environ.get("MIMO_API_KEY", "") or os.environ.get("XIAOMI_API_KEY", "")
-            elif provider == 'deepseek':
-                api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-            elif provider == 'grok':
-                api_key = os.environ.get("XAI_API_KEY", "") or os.environ.get("GROK_API_KEY", "")
-            elif provider == 'mistral':
-                api_key = os.environ.get("MISTRAL_API_KEY", "")
-                
-        if not api_key:
-            return jsonify({'success': False, 'message': f'{provider.upper()} API Key is required. Please set it in your environment variables or paste it in the form.'}), 400
-            
-        # Load images directly into memory — no disk I/O needed
-        pil_images = []
-        try:
-            max_images = 5 if gen_depth == 'fast' else 10
-            max_side = 384 if gen_depth == 'fast' else 512
-            for file in uploaded_files[:max_images]:
-                if file.filename == '':
-                    continue
-                pil_img = Image.open(BytesIO(file.read()))
-                # Resize to reduce API token cost & latency
-                w, h = pil_img.size
-                if max(w, h) > max_side:
-                    scale = max_side / max(w, h)
-                    pil_img = pil_img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-                if pil_img.mode in ("RGBA", "P"):
-                    pil_img = pil_img.convert("RGB")
-                pil_images.append(pil_img)
-        except Exception as e:
-            return jsonify({'success': False, 'message': f'Failed to process images: {str(e)}'}), 400
-        
-        # Construct dynamic generation instruction
-        prompt = f"""
-You are analyzing a sequence of {len(pil_images)} user interface screenshots representing a user journey or workflow on: '{page_title}'
-The screenshots are ordered sequentially from first to last (representing Screen 1 to Screen {len(pil_images)}).
-Analyze the state transitions, user clicks, and layout changes across these sequential screens.
-
-Generate a comprehensive test plan with prefix '{id_prefix}' for the sequential TC-ID (e.g. {id_prefix}001, {id_prefix}002, etc.).
-{'Return only the test_cases array; elements and checklist may be omitted or empty.' if not generate_script else 'Also include elements and checklist arrays when available so the recreate script can be generated.'}
-Additional context or constraints: {instructions if instructions else 'None'}
-"""
-        
-        # Invoke API depending on selected provider
-        data = None
-        if provider == 'gemini':
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(
-                contents=[prompt, *pil_images, sys_prompt],
-                generation_config=genai.GenerationConfig(
-                    response_mime_type="application/json"
-                ),
-                request_options={"timeout": 300}
-            )
-            data = json.loads(response.text)
-        elif provider == 'openai':
-            base64_images = [pil_to_base64_jpeg(img) for img in pil_images]
-            data = call_openai_compatible_api("https://api.openai.com/v1", model_name, api_key, sys_prompt, prompt, base64_images, provider="OpenAI")
-        elif provider == 'claude':
-            base64_images = [pil_to_base64_jpeg(img) for img in pil_images]
-            data = call_claude_api(model_name, api_key, sys_prompt, prompt, base64_images)
-        elif provider == 'mimo':
-            base64_images = [pil_to_base64_jpeg(img) for img in pil_images]
-            data = call_openai_compatible_api("https://api.xiaomimimo.com/v1", model_name, api_key, sys_prompt, prompt, base64_images, provider="MiMo")
-        elif provider == 'deepseek':
-            base64_images = [pil_to_base64_jpeg(img) for img in pil_images]
-            data = call_openai_compatible_api("https://api.deepseek.com", model_name, api_key, sys_prompt, prompt, base64_images, provider="DeepSeek")
-        elif provider == 'grok':
-            base64_images = [pil_to_base64_jpeg(img) for img in pil_images]
-            data = call_openai_compatible_api("https://api.x.ai/v1", model_name, api_key, sys_prompt, prompt, base64_images, provider="Grok")
-        elif provider == 'mistral':
-            base64_images = [pil_to_base64_jpeg(img) for img in pil_images]
-            data = call_openai_compatible_api("https://api.mistral.ai/v1", model_name, api_key, sys_prompt, prompt, base64_images, provider="Mistral")
-        
-        if not data:
-            raise Exception("No data returned from AI Model engine.")
-            
-        # Extract data structures — normalize field aliases from different providers
-        def normalize_tc(d):
-            """Map common field name variations to the canonical schema fields."""
-            return {
-                'tc_id':        d.get('tc_id') or d.get('id') or d.get('test_id') or '',
-                'scenario':     d.get('scenario') or d.get('test_scenario') or d.get('title') or d.get('name') or '',
-                'case_type':    d.get('case_type') or d.get('type') or d.get('test_type') or 'Positive',
-                'precondition': d.get('precondition') or d.get('pre_condition') or d.get('prerequisites') or '',
-                'steps':        d.get('steps') or d.get('step_scenario') or d.get('test_steps') or d.get('actions') or '',
-                'expected':     d.get('expected') or d.get('expected_result') or d.get('expected_results') or d.get('result') or '',
-            }
-
-        # Unwrap if AI returned a nested wrapper key
-        if 'test_cases' not in data:
-            for key in data:
-                if isinstance(data[key], dict) and 'test_cases' in data[key]:
-                    data = data[key]
-                    break
-
-        test_cases_list = []
-        for tc_data in data.get('test_cases', []):
-            try:
-                test_cases_list.append(TestCaseSchema(**normalize_tc(tc_data)))
-            except Exception:
-                pass
-
-        elements_list = []
-        checklist_list = []
-        if generate_script:
-            for el_data in data.get('elements', []):
-                try:
-                    elements_list.append(ElementSchema(**el_data))
-                except Exception:
-                    pass
-
-            for chk_data in data.get('checklist', []):
-                try:
-                    checklist_list.append(ChecklistSchema(**chk_data))
-                except Exception:
-                    pass
-
-        if not test_cases_list:
-            raise Exception("AI returned no valid test cases. The model may have responded in an unexpected format. Try again or use a different model.")
-            
-        # Define output names
-        clean_title = re.sub(r'[^a-zA-Z0-9_]', '', page_title.replace(' ', '_'))
-        filename_base = f"{clean_title.lower()}"
-        
-        xlsx_name = f"testplan_{filename_base}.xlsx"
-        
-        outputs_dir = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'outputs')
-        # Create module‑specific folder under outputs
-        module_dir = os.path.join(outputs_dir, filename_base)
-        os.makedirs(os.path.join(module_dir, "excel"), exist_ok=True)
-        xlsx_path = os.path.join(module_dir, "excel", xlsx_name)
-        
-        # Build standard styled Excel file
-        tc_count, ordered_cases = build_excel_file(page_title, id_prefix, test_cases_list, elements_list, checklist_list, xlsx_path, model_name=model_name, gen_depth=gen_depth)
-        
-        py_name = None
-        if generate_script:
-            os.makedirs(os.path.join(module_dir, "scripts"), exist_ok=True)
-            py_name = f"testplan_{filename_base}.py"
-            py_path = os.path.join(module_dir, "scripts", py_name)
-            # Build self-contained Python recreate script only when requested.
-            build_python_script(page_title, id_prefix, ordered_cases, elements_list, checklist_list, py_path, filename_base, model_name=model_name, gen_depth=gen_depth)
-        
-        checklist_target = 5 if gen_depth == "ultra" else (15 if gen_depth == "fast" else 50)
-        return jsonify({
-            'success': True,
-            'message': 'Test plan generated successfully!',
-            'test_case_count': tc_count,
-            'checklist_count': checklist_target,
-            'xlsx_file': xlsx_name,
-            'py_file': py_name,
-            'download_url': f'/api/download/{xlsx_name}'
-        })
-        
     except Exception as e:
         traceback.print_exc()
         if google_exceptions and isinstance(e, (
@@ -1647,9 +1500,9 @@ def delete_file(filename):
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
-# ───────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # NEW API ENDPOINTS: LIBRARY LISTING & FILE PREVIEW
-# ───────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @app.route('/api/files', methods=['GET'])
 def list_files():
     try:
@@ -1802,93 +1655,24 @@ def save_xlsx():
             if not os.path.exists(file_path):
                 return jsonify({'success': False, 'message': f'File {filename} not found.'}), 404
 
-        # 1. Check if it's a CRUD module
-        module_key = None
-        for key, cfg in _CRUD_MODULES.items():
-            if filename == cfg['xlsx_filename']:
-                module_key = key
-                break
-
-        if module_key:
-            # Load workbook and apply changes first in memory
-            wb = openpyxl.load_workbook(file_path)
-            for sheet_name, sheet_changes in changes.items():
-                if sheet_name in wb.sheetnames:
-                    ws = wb[sheet_name]
-                    for chg in sheet_changes:
-                        coord = chg.get('coordinate')
-                        val = chg.get('value')
-                        if coord:
-                            ws[coord] = val
-                            
-            # Read back cases from sheet 1 of wb
-            ws_plan = wb.worksheets[0]
-            cases = []
-            col_indices = {'tc_id': 1, 'scenario': 2, 'case_type': 3, 'precondition': 4, 'steps': 5, 'expected': 6}
-            
-            for r in range(2, ws_plan.max_row + 1):
-                val_a = ws_plan.cell(row=r, column=1).value
-                if val_a and (val_a.startswith("SECTION:") or val_a.startswith("A. ") or val_a.startswith("B. ") or val_a.startswith("C. ") or val_a.startswith("D. ") or val_a.startswith("E. ") or val_a.startswith("F. ") or val_a.startswith("G. ") or val_a.startswith("H. ") or val_a.startswith("I. ") or val_a.startswith("J. ") or val_a.startswith("K. ") or val_a.startswith("L. ") or val_a.startswith("M. ") or val_a.startswith("N. ") or val_a.startswith("O. ") or val_a.startswith("P. ") or val_a.startswith("Q. ") or val_a.startswith("R. ") or val_a.startswith("S. ") or val_a.startswith("T. ") or val_a.startswith("U. ") or val_a.startswith("V. ")):
-                    title = val_a
-                    if title.startswith("SECTION:"):
-                        title = title[len("SECTION:"):].strip()
-                    cases.append({'type': 'section', 'title': title})
-                else:
-                    tc_id_val = val_a
-                    if not tc_id_val:
-                        continue
-                    scenario = ws_plan.cell(row=r, column=col_indices['scenario']).value or ''
-                    case_type = ws_plan.cell(row=r, column=col_indices['case_type']).value or 'Positive'
-                    precondition = ws_plan.cell(row=r, column=col_indices['precondition']).value or ''
-                    steps = ws_plan.cell(row=r, column=col_indices['steps']).value or ''
-                    expected = ws_plan.cell(row=r, column=col_indices['expected']).value or ''
-                    
-                    # Clean up tc_id if it contains parts for createProject format
-                    if _CRUD_MODULES[module_key]['format'] == 'create' and ' | ' in tc_id_val:
-                        tc_id_val = tc_id_val.split(' | ', 1)[0].strip()
-                        
-                    cases.append({
-                        'type': 'testcase',
-                        'tc_id': tc_id_val,
-                        'scenario': scenario,
-                        'case_type': case_type,
-                        'precondition': precondition,
-                        'steps': steps,
-                        'expected': expected
-                    })
-            
-            # Save back to data python file
-            _save_module_cases(module_key, cases)
-            wb.save(file_path)
-        else:
-            # For custom files, save directly to Excel
-            wb = openpyxl.load_workbook(file_path)
-            for sheet_name, sheet_changes in changes.items():
-                if sheet_name in wb.sheetnames:
-                    ws = wb[sheet_name]
-                    for chg in sheet_changes:
-                        coord = chg.get('coordinate')
-                        val = chg.get('value')
-                        if coord:
-                            ws[coord] = val
-            wb.save(file_path)
-            
-            # Sync to/from root
-            if os.path.dirname(file_path) == root_dir:
-                shutil.copy2(file_path, os.path.join(outputs_dir, filename))
-            else:
-                root_version = os.path.join(root_dir, filename)
-                if os.path.exists(root_version):
-                    shutil.copy2(file_path, root_version)
+        wb = openpyxl.load_workbook(file_path)
+        for sheet_name, sheet_changes in changes.items():
+            if sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                for chg in sheet_changes:
+                    coord = chg.get('coordinate')
+                    val = chg.get('value')
+                    if coord:
+                        ws[coord] = val
+        wb.save(file_path)
 
         return jsonify({'success': True, 'message': 'Changes saved successfully!'})
     except Exception as e:
         traceback.print_exc()
         return jsonify({'success': False, 'message': str(e)}), 500
 
-# ───────────────────────────────────────────────────
 # MULTI-FORMAT EXPORT SYSTEM
-# ───────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @app.route('/api/export/<filename>/<export_format>', methods=['GET'])
 def export_file(filename, export_format):
     try:
@@ -1955,7 +1739,7 @@ def export_file(filename, export_format):
             
         elif export_format == 'markdown':
             lines = []
-            lines.append(f"# Test Plan — {base_name.replace('testplan_', '').replace('_', ' ').title()}")
+            lines.append(f"# Test Plan â€” {base_name.replace('testplan_', '').replace('_', ' ').title()}")
             lines.append("")
             
             headers = []
@@ -2008,7 +1792,7 @@ def export_file(filename, export_format):
             html.append("<html>")
             html.append("<head>")
             html.append("<meta charset='utf-8'>")
-            html.append(f"<title>{title_text} — Himagent Export</title>")
+            html.append(f"<title>{title_text} â€” Himagent Export</title>")
             html.append("<style>")
             html.append("""
                 body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 24px; background: #0f172a; color: #cbd5e1; }
@@ -2087,9 +1871,9 @@ def export_file(filename, export_format):
         traceback.print_exc()
         return str(e), 500
 
-# ───────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # AUTO-DETECT MODULE TYPE + AI NAMING SUGGESTION
-# ───────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @app.route('/api/detect', methods=['POST'])
 def detect_module():
     """Lightweight call: detect module type + suggest name & TC prefix from screenshot."""
@@ -2282,9 +2066,9 @@ Be concise and accurate. Only return the JSON object.
         return jsonify({'success': False, 'message': msg}), 500
 
 
-# ───────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # DASHBOARD STATISTICS API
-# ───────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
     """Return aggregated statistics from the outputs/ folder."""
@@ -2376,198 +2160,8 @@ def get_stats():
         traceback.print_exc()
         return jsonify({'success': False, 'message': str(e)}), 500
 
-# ═══════════════════════════════════════════════════════
-# CRUD ENDPOINTS FOR STATIC TEST CASES
-# ═══════════════════════════════════════════════════════
-
-_CRUD_MODULES = {
-    'createProject': {
-        'data_file': 'data/createProject_cases.py',
-        'xlsx_filename': 'testplan_createProject.xlsx',
-        'func': 'get_tests',
-        'format': 'create',   # tuples: (tc_id|"SECTION", ...)
-    },
-    'imageGen': {
-        'data_file': 'data/imageGen_cases.py',
-        'xlsx_filename': 'testplan_imageGen.xlsx',
-        'func': 'get_test_cases',
-        'format': 'v2',        # tuples: (scenario, test_name, case_type, precond, steps, expected)
-    },
-    'videoGen': {
-        'data_file': 'data/videoGen_cases.py',
-        'xlsx_filename': 'testplan_videoGen.xlsx',
-        'func': 'get_test_cases',
-        'format': 'v2',
-    },
-}
-
-
-def _load_module_cases(module_key):
-    """Dynamically import & call the get_tests/get_test_cases function. Returns list of dicts."""
-    root = os.path.abspath(os.path.dirname(__file__))
-    cfg = _CRUD_MODULES[module_key]
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        f"data_{module_key}",
-        os.path.join(root, cfg['data_file'])
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    raw = getattr(mod, cfg['func'])()
-
-    if cfg['format'] == 'create':
-        result = []
-        for item in raw:
-            if item[0] == 'SECTION':
-                result.append({'type': 'section', 'title': item[1]})
-            else:
-                tc_id, case_type, precond, steps, expected = item
-                # tc_id may contain the scenario after '|'
-                parts = tc_id.split(' | ', 1)
-                scenario = parts[1].strip() if len(parts) > 1 else tc_id
-                result.append({
-                    'type': 'testcase',
-                    'tc_id': parts[0].strip(),
-                    'scenario': scenario,
-                    'case_type': case_type,
-                    'precondition': precond,
-                    'steps': steps,
-                    'expected': expected,
-                })
-        return result
-    else:  # v2
-        result = []
-        counter = 0
-        for item in raw:
-            scenario_code, test_name, case_type, precond, steps, expected = item
-            counter += 1
-            result.append({
-                'type': 'testcase',
-                'tc_id': str(counter),
-                'scenario': f"{scenario_code} — {test_name}",
-                'case_type': case_type,
-                'precondition': precond,
-                'steps': steps,
-                'expected': expected,
-            })
-        return result
-
-
-def _save_module_cases(module_key, cases_json):
-    """Overwrite the data file with updated test cases, preserving section rows if createProject."""
-    root = os.path.abspath(os.path.dirname(__file__))
-    cfg = _CRUD_MODULES[module_key]
-    data_path = os.path.join(root, cfg['data_file'])
-
-    # Read original file to preserve everything outside the function body
-    with open(data_path, 'r', encoding='utf-8') as f:
-        original = f.read()
-
-    # Build the new function body lines
-    # Helper: safe Python string literal via json.dumps (bulletproof newline/quote escaping)
-    def _s(val):
-        return json.dumps(str(val), ensure_ascii=False)
-    
-    lines = []
-    if cfg['format'] == 'create':
-        lines.append('def get_tests():')
-        lines.append('    tests = []')
-        lines.append('    tc_n  = 1')
-        lines.append('')
-        for item in cases_json:
-            if item.get('type') == 'section':
-                lines.append(f"    tests.append((\"SECTION\", {_s(item['title'])}))")
-            else:
-                tc_id_val = f'f"TC-{{tc_n:03d}} | {item["scenario"]}"'
-                lines.append(f'    tests.append(({tc_id_val}, {_s(item["case_type"])}, {_s(item["precondition"])}, {_s(item["steps"])}, {_s(item["expected"])}))')
-                lines.append('    tc_n += 1')
-        lines.append('    return tests')
-    else:  # v2
-        lines.append('def get_test_cases():')
-        lines.append('    test_cases = []')
-        lines.append('')
-        lines.append('    def add(scenario, test_name, case_type, precond, steps, expected):')
-        lines.append('        test_cases.append((scenario, test_name, case_type, precond, steps, expected))')
-        lines.append('')
-        for item in cases_json:
-            if item.get('type') != 'testcase':
-                continue
-            scenario_full = item['scenario']
-            # Split scenario_code and test_name
-            if ' \u2014 ' in scenario_full:
-                sc_code, t_name = scenario_full.split(' \u2014 ', 1)
-            else:
-                sc_code = scenario_full
-                t_name = scenario_full
-            lines.append(
-                f'    add({_s(sc_code)}, {_s(t_name)}, '
-                f'{_s(item["case_type"])}, {_s(item["precondition"])}, '
-                f'{_s(item["steps"])}, {_s(item["expected"])})'
-            )
-        lines.append('    return test_cases')
-    
-    new_func_body = '\n'.join(lines)
-
-    # Replace the function in the file using regex
-    # IMPORTANT: Escape backslashes in replacement to prevent re.sub() from
-    # interpreting \n escape sequences as real newlines.
-    func_name = cfg['func']
-    # Match from "def func_name(" to just before the next module-level
-    # statement (comment or variable assignment) — preserves data sections
-    pattern = re.compile(
-        rf'^def {func_name}\(.*?(?=\n(?:# |[A-Z_]+ = )|\Z)',
-        re.MULTILINE | re.DOTALL
-    )
-    # Escape backslashes so re.sub() treats \n as literal backslash-n
-    _escaped_body = new_func_body.replace('\\', '\\\\')
-    new_content = pattern.sub(_escaped_body + '\n\n\n', original)
-    with open(data_path, 'w', encoding='utf-8', newline='') as f:
-        f.write(new_content)
-
-
-@app.route('/api/testcases/<module_key>', methods=['GET'])
-def get_testcases(module_key):
-    if module_key not in _CRUD_MODULES:
-        return jsonify({'success': False, 'message': f'Unknown module: {module_key}'}), 404
-    try:
-        cases = _load_module_cases(module_key)
-        return jsonify({'success': True, 'module': module_key, 'cases': cases})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/testcases/<module_key>', methods=['POST'])
-def save_testcases(module_key):
-    if module_key not in _CRUD_MODULES:
-        return jsonify({'success': False, 'message': f'Unknown module: {module_key}'}), 404
-    try:
-        payload = request.get_json(force=True)
-        cases = payload.get('cases', [])
-        _save_module_cases(module_key, cases)
-
-        # Count TCs in result
-        tc_count = sum(1 for c in cases if c.get('type') == 'testcase')
-        return jsonify({
-            'success': True,
-            'message': f'Saved successfully.',
-            'tc_count': tc_count
-        })
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/testcases/<module_key>/export')
-def export_static_xlsx(module_key):
-    if module_key not in _CRUD_MODULES:
-        return jsonify({'success': False, 'message': f'Unknown module: {module_key}'}), 404
-    filename = _CRUD_MODULES[module_key]['xlsx_filename']
-    fpath = find_file_in_outputs(filename)
-    if fpath and os.path.isfile(fpath):
-        return send_file(fpath, as_attachment=True)
-    return jsonify({'success': False, 'message': f'{filename} not found.'}), 404
-
-
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 if __name__ == '__main__':
     app.run(host='localhost', port=5000, debug=True, threaded=True, use_reloader=False)
+
+

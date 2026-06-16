@@ -54,7 +54,7 @@ def build_testcase_sheet_create(wb, sheet_title: str, headers: list,
             scenario_val = parts[1].strip() if len(parts) > 1 else ""
             
             # Align with headers: TC-ID, TEST SCENARIO, CASE TYPE, PRE-CONDITION, STEP SCENARIO, EXPECTED RESULT, ACTUAL RESULT, EVIDENCE
-            values = [tc_id_val, scenario_val, case_type, precond, steps, expected, "", "—"]
+            values = [tc_id_val, scenario_val, case_type, precond, steps, expected, "", ""]
             for c, v in enumerate(values, 1):
                 ws.cell(row=row, column=c, value=v)
             style_body(ws, row, len(headers))
@@ -115,7 +115,7 @@ def build_testcase_sheet_v2(wb, sheet_title: str, headers: list,
 
         scenario_display = f"{scenario} — {test_name}"
         # Align with headers: TC-ID, TEST SCENARIO, CASE TYPE, PRE-CONDITION, STEP SCENARIO, EXPECTED RESULT, ACTUAL RESULT, EVIDENCE
-        values = [tc_id, scenario_display, case_type, precond, steps, expected, "", "—"]
+        values = [tc_id, scenario_display, case_type, precond, steps, expected, "", ""]
         for c, v in enumerate(values, 1):
             ws.cell(row=row, column=c, value=v)
         style_body(ws, row, len(headers))
