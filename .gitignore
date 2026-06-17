@@ -28,3 +28,4 @@ ENV/
 Thumbs.db
 
 data/generation_jobs.sqlite3
+outputs/

@@ -17,7 +17,7 @@
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
     />
     <!-- Custom Style Sheet -->
-    <link rel="stylesheet" href="/static/style.css?v=1781522017" />
+    <link rel="stylesheet" href="/static/style.css?v=1781700027" />
   </head>
 
   <body>
@@ -188,6 +188,26 @@
               </div>
             </div>
 
+            <div id="resultPreview" class="result-preview hidden">
+              <div class="result-preview-header">
+                <span><i class="fa-solid fa-list-check"></i> Quick Preview</span>
+                <span id="resultPreviewMeta">Top cases</span>
+              </div>
+              <div class="result-preview-table-wrap">
+                <table class="result-preview-table">
+                  <thead>
+                    <tr>
+                      <th>TC-ID</th>
+                      <th>Scenario</th>
+                      <th>Type</th>
+                      <th>Expected</th>
+                    </tr>
+                  </thead>
+                  <tbody id="resultPreviewBody"></tbody>
+                </table>
+              </div>
+            </div>
+
             <div class="output-files-list">
               <div class="file-item">
                 <i class="fa-solid fa-file-excel file-icon excel"></i>
@@ -210,10 +230,30 @@
             </div>
 
             <div class="result-actions">
-              <a id="downloadBtn" href="#" class="btn-success">
-                <i class="fa-solid fa-circle-arrow-down btn-icon"></i>
-                <span>Download Workbook</span>
-              </a>
+              <div class="export-dropdown-wrapper result-export-wrapper">
+                <button type="button" class="btn-success result-export-toggle" id="resultExportToggleBtn">
+                  <i class="fa-solid fa-file-export btn-icon"></i>
+                  <span>Export Plan</span>
+                  <i class="fa-solid fa-chevron-down toggle-chevron" style="font-size:10px;margin-left:4px;"></i>
+                </button>
+                <div class="export-menu hidden" id="resultExportMenu">
+                  <a id="downloadBtn" href="#" class="export-item">
+                    <i class="fa-solid fa-file-excel"></i> Download XLSX
+                  </a>
+                  <button type="button" class="export-item" data-result-format="csv">
+                    <i class="fa-solid fa-file-csv"></i> Export CSV
+                  </button>
+                  <button type="button" class="export-item" data-result-format="json">
+                    <i class="fa-solid fa-code"></i> Export JSON
+                  </button>
+                  <button type="button" class="export-item" data-result-format="markdown">
+                    <i class="fa-brands fa-markdown"></i> Export Markdown
+                  </button>
+                  <button type="button" class="export-item" data-result-format="html">
+                    <i class="fa-solid fa-file-code"></i> Export HTML
+                  </button>
+                </div>
+              </div>
               <button id="previewResultBtn" type="button" class="btn-secondary">
                 <i class="fa-solid fa-table btn-icon"></i>
                 <span>Preview Workbook</span>
@@ -246,7 +286,7 @@
             <div id="modelSelectionContainer" class="form-row">
               <div class="form-group half-width">
                 <label for="provider_select">AI Provider</label>
-                <div class="input-wrapper">
+                <div class="input-wrapper select-wrapper">
                   <i class="fa-solid fa-network-wired field-icon"></i>
                   <select id="provider_select" name="provider">
                     <option value="gemini" selected>Google Gemini</option>
@@ -256,25 +296,29 @@
                     <option value="deepseek">DeepSeek</option>
                     <option value="grok">xAI Grok</option>
                     <option value="mistral">Mistral AI</option>
+                    <option value="9router">9Router Local</option>
                   </select>
                 </div>
+                <div class="field-error" id="providerError"></div>
               </div>
 
               <div class="form-group half-width">
                 <label for="model_name"
-                  >AI Model Engine <span class="required">*</span></label
+                  >AI Model Engine <span class="required">*</span>
+                  <span id="modelHealthBadge" class="model-health-badge unknown">Untested</span></label
                 >
-                <div class="input-wrapper">
+                <div class="input-wrapper select-wrapper">
                   <i class="fa-solid fa-brain field-icon"></i>
                   <select id="model_name" name="model_name" required>
                     <!-- Populated dynamically based on provider -->
                   </select>
                 </div>
+                <div class="field-error" id="modelError"></div>
               </div>
             </div>
 
             <!-- API Key / Token input -->
-            <div class="form-group">
+            <div class="form-group" id="apiKeyGroup">
               <div class="api-key-row">
                 <label for="api_key" id="api_key_label">Gemini API Key</label>
                 <span id="apiKeyStatus" class="api-key-status"></span>
@@ -290,6 +334,33 @@
                   data-1p-ignore="true"
                   placeholder="Paste your Gemini API key (falls back to server env variables if blank)"
                 />
+              </div>
+            </div>
+
+            <div id="routerInfo" class="provider-help hidden">
+              <!-- Normal connected state -->
+              <div id="routerConnectedRow" class="router-help-row">
+                <span class="router-help-copy">Configure provider keys and routes in the 9Router dashboard: <a href="http://localhost:20128" target="_blank" rel="noopener">http://localhost:20128</a></span>
+                <span class="router-actions">
+                  <span id="routerStatus" class="api-key-status"></span>
+                  <button type="button" id="routerTestBtn" class="btn-router-test">Test</button>
+                </span>
+              </div>
+              <!-- Not found state -->
+              <div id="routerNotFound" class="router-not-found hidden">
+                <div class="router-not-found-icon"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                <div class="router-not-found-body">
+                  <strong>9Router not detected on this machine</strong>
+                  <p>9Router is a local AI router app that must be running on port 20128. It is not installed by default — you need to download and run it first.</p>
+                  <div class="router-not-found-actions">
+                    <a href="https://github.com/9router/9router/releases" target="_blank" rel="noopener" class="btn-router-install">
+                      <i class="fa-solid fa-download"></i> Download 9Router
+                    </a>
+                    <button type="button" id="routerRetryBtn" class="btn-router-retry">
+                      <i class="fa-solid fa-rotate-right"></i> Retry connection
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -309,6 +380,7 @@
                     required
                   />
                 </div>
+                <div class="field-error" id="pageTitleError"></div>
               </div>
 
               <div class="form-group half-width">
@@ -325,6 +397,7 @@
                     required
                   />
                 </div>
+                <div class="field-error" id="idPrefixError"></div>
               </div>
             </div>
 
@@ -332,17 +405,20 @@
             <div class="form-row">
               <div class="form-group half-width">
                 <label for="gen_depth">Generation Depth</label>
-                <div class="input-wrapper">
+                <div class="input-wrapper select-wrapper">
                   <i class="fa-solid fa-sliders field-icon"></i>
                   <select id="gen_depth" name="gen_depth">
-                    <option value="fast" selected>
-                      Fast Mode (10-15 test cases - fast response)
+                    <option value="ultra" selected>
+                      ⚡ Ultra Fast (5-8 test cases - quickest response)
                     </option>
-                    <option value="ultra">
-                      Ultra Fast Mode (5-8 test cases - quickest response)
+                    <option value="fast">
+                      🚀 Fast (10-15 test cases - fast response)
+                    </option>
+                    <option value="normal">
+                      📋 Normal (30-50 test cases - balanced coverage)
                     </option>
                     <option value="exhaustive">
-                      Exhaustive Mode (50-80 test cases - detailed response)
+                      🔬 Exhaustive (50-80 test cases - full coverage)
                     </option>
                   </select>
                 </div>
@@ -362,85 +438,92 @@
             </div>
             <div class="form-group" id="instructionsGroup">
               <div class="instructions-header">
-                <label for="instructions" class="instructions-label"
-                  >Custom Instructions / Context (Preset-Driven)</label
-                >
-                <button
-                  type="button"
-                  id="clearInstructionsBtn"
-                  class="btn-clear-instructions"
-                  title="Clear all instructions"
-                >
-                  <i class="fa-solid fa-eraser"></i> Clear
-                </button>
+                <label for="instructions" class="instructions-label">Custom Instructions / Context (Preset-Driven)</label>
+                <div class="instructions-header-actions">
+                  <span id="instructionsCounter" class="instructions-counter hidden">0 chars</span>
+                  <button type="button" id="savePresetBtn" class="btn-save-preset hidden" title="Save as custom preset">
+                    <i class="fa-solid fa-bookmark"></i> Save
+                  </button>
+                  <button type="button" id="clearInstructionsBtn" class="btn-clear-instructions hidden" title="Clear all instructions">
+                    <i class="fa-solid fa-eraser"></i> Clear
+                  </button>
+                </div>
               </div>
               <div class="input-wrapper textarea-wrapper">
                 <i class="fa-solid fa-file-lines textarea-icon"></i>
-                <textarea
-                  id="instructions"
-                  name="instructions"
-                  rows="4"
-                  placeholder="Type custom instructions here, or click preset chips below to append..."
-                ></textarea>
+                <textarea id="instructions" name="instructions" rows="4"
+                  placeholder="Type custom instructions, or click presets below to build context..."></textarea>
               </div>
-              <div class="preset-container">
-                <span class="preset-label">Quick Presets:</span>
-                <button
-                  type="button"
-                  class="preset-chip"
-                  data-text="Focus on functional flows, happy paths, button clicks, links navigation, form submissions, and expected success states."
-                >
-                  Functional Test
+
+              <!-- Coverage Focus -->
+              <div class="preset-container preset-collapsible" data-category="coverage">
+                <button type="button" class="preset-category-toggle">
+                  <i class="fa-solid fa-crosshairs preset-cat-icon" style="color:#7c3aed"></i>
+                  <span>Coverage Focus</span>
+                  <i class="fa-solid fa-chevron-down preset-chevron"></i>
                 </button>
-                <button
-                  type="button"
-                  class="preset-chip"
-                  data-text="Focus on visual alignment, spacing, typography, colors, dark mode transitions, hover effects, and premium UI aesthetics."
-                >
-                  UI/UX &amp; Layout
+                <div class="preset-chips-row preset-chips-collapsed">
+                  <button type="button" class="preset-chip" data-text="Focus on functional flows, happy paths, button clicks, links navigation, form submissions, and expected success states.">Functional</button>
+                  <button type="button" class="preset-chip" data-text="Focus on visual alignment, spacing, typography, colors, dark mode transitions, hover effects, and UI aesthetics.">UI/UX</button>
+                  <button type="button" class="preset-chip" data-text="Focus on boundary values, input constraints, maximum lengths, email/phone format validation, special characters, and required fields.">Input &amp; Validation</button>
+                  <button type="button" class="preset-chip" data-text="Focus on security: XSS prevention, SQL injection, CSRF tokens, script embedding, session handling, and input sanitization.">Security</button>
+                  <button type="button" class="preset-chip" data-text="Focus on WCAG 2.1 AA: keyboard tab order, visible focus rings, aria-labels, screen reader compatibility, and color contrast 4.5:1.">Accessibility</button>
+                  <button type="button" class="preset-chip" data-text="Focus on responsive layouts across iPhone SE 375px, Galaxy S20 412px, iPad 768px, touch gestures, and portrait/landscape orientation.">Mobile</button>
+                  <button type="button" class="preset-chip" data-text="Focus on Slow 3G latency, server timeout handling, rate limiting after rapid submissions, and time-to-interactive thresholds.">Performance</button>
+                  <button type="button" class="preset-chip" data-text="Focus on Unicode characters, CJK/Arabic input, RTL layout override, date/currency locale formatting, and zero-width characters.">i18n &amp; Unicode</button>
+                  <button type="button" class="preset-chip" data-text="Focus on typography and text sections: heading hierarchy (H1-H4 size and weight distinction), body text line-height and readability, label and placeholder text visibility, text truncation with ellipsis on overflow, long text wrapping, and empty string rendering.">Typography &amp; Text</button>
+                  <button type="button" class="preset-chip" data-text="Focus on spacing and layout consistency: padding and margin between sections, element alignment on grid, no overlapping components, section divider visibility, card and panel internal spacing, and whitespace balance across breakpoints.">Spacing &amp; Layout</button>
+                  <button type="button" class="preset-chip" data-text="Focus on interactive states for every UI element: default, hover, focus, active, disabled, and loading states. Verify visual feedback is distinct and consistent across buttons, inputs, links, and dropdowns.">Interactive States</button>
+                  <button type="button" class="preset-chip" data-text="Focus on empty and error states: empty list or table with 0-results illustration and helper message, form field inline error messages with icon, page-level error banners, skeleton loader appearance, and no-data placeholder copy.">Empty &amp; Error States</button>
+                  <button type="button" class="preset-chip" data-text="Focus on dark mode: all text readable on dark background, no hardcoded white or black color leaking through, icon visibility, border contrast, input background in dark, and modal and overlay appearance in dark theme.">Dark Mode</button>
+                  <button type="button" class="preset-chip" data-text="Focus on micro-interactions and animation: button press feedback, page transition smoothness, toast notification slide-in and auto-dismiss timing, loading spinner visibility, and collapse and expand animation fluidity.">Micro-interactions</button>
+                  <button type="button" class="preset-chip" data-text="Focus on color usage and contrast: brand color consistency, text-on-background contrast ratio at least 4.5:1 (WCAG AA), disabled element color clearly distinct from active, error state color (red) visually separate from warning (amber), and no reliance on color alone to convey meaning.">Color &amp; Contrast</button>
+                </div>
+              </div>
+
+              <!-- SUT Type -->
+              <div class="preset-container preset-collapsible" data-category="sut">
+                <button type="button" class="preset-category-toggle">
+                  <i class="fa-solid fa-layer-group preset-cat-icon" style="color:#10b981"></i>
+                  <span>SUT Type</span>
+                  <i class="fa-solid fa-chevron-down preset-chevron"></i>
                 </button>
-                <button
-                  type="button"
-                  class="preset-chip"
-                  data-text="Focus on boundary values, input constraints, maximum lengths, email/phone format validation, special characters, and required fields."
-                >
-                  Input &amp; Validation
+                <div class="preset-chips-row preset-chips-collapsed">
+                  <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Login / Authentication page. Include test cases for valid login, invalid credentials, locked account, forgot password, session persistence, and brute-force protection.">Login / Auth</button>
+                  <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Dashboard / Analytics page. Include test cases for data widget rendering, filter interactions, date range selection, chart loading states, and empty state handling.">Dashboard</button>
+                  <button type="button" class="preset-chip preset-chip--sut" data-text="This is an E-commerce page. Include test cases for add-to-cart, quantity update, price calculation, coupon/promo code, checkout flow, and payment method selection.">E-commerce</button>
+                  <button type="button" class="preset-chip preset-chip--sut" data-text="This is a multi-step Form / Wizard. Include test cases for step navigation, field validation per step, back/forward state retention, and final submission.">Form / Wizard</button>
+                  <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Search and Filter page. Include test cases for keyword search, filter combinations, no-results state, pagination, and sort order behavior.">Search &amp; Filter</button>
+                  <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Settings / Profile page. Include test cases for field editing, save/discard changes, password change, avatar upload, and permission-based field visibility.">Settings</button>
+                  <button type="button" class="preset-chip preset-chip--sut" data-text="This page has a File Upload feature. Include test cases for valid upload, invalid file type, max size exceeded, zero-byte file, corrupted file, double extension (.jpg.exe), and EXIF stripping.">File Upload</button>
+                  <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Data Table / List View. Include test cases for column sorting, row selection, bulk action, pagination, search/filter within table, and empty state.">Data Table</button>
+                </div>
+              </div>
+
+              <!-- Focus Mode -->
+              <div class="preset-container preset-collapsible" data-category="focus">
+                <button type="button" class="preset-category-toggle">
+                  <i class="fa-solid fa-bullseye preset-cat-icon" style="color:#f59e0b"></i>
+                  <span>Focus Mode</span>
+                  <i class="fa-solid fa-chevron-down preset-chevron"></i>
                 </button>
-                <button
-                  type="button"
-                  class="preset-chip"
-                  data-text="Focus on security validation including XSS prevention, SQL injection, script embedding, session tokens, and input sanitization."
-                >
-                  Security &amp; Privacy
+                <div class="preset-chips-row preset-chips-collapsed">
+                  <button type="button" class="preset-chip preset-chip--focus" data-text="Focus ONLY on negative test cases: invalid inputs, error states, rejected submissions, security attacks, and failure handling. Skip positive/happy-path cases.">Negative Only</button>
+                  <button type="button" class="preset-chip preset-chip--focus" data-text="Focus ONLY on happy path / positive test cases: successful flows, valid inputs, and expected success states. Skip edge cases and error handling.">Happy Path Only</button>
+                  <button type="button" class="preset-chip preset-chip--focus" data-text="Generate a compact smoke test: 5 critical test cases that verify the most important functionality is working. Prioritize core flow over edge cases.">Smoke Test</button>
+                  <button type="button" class="preset-chip preset-chip--focus" data-text="Deep-dive into edge cases and boundary conditions: empty states, maximum/minimum values, concurrent actions, race conditions, and unexpected user behavior.">Edge Cases</button>
+                </div>
+              </div>
+
+              <!-- Custom saved presets -->
+              <div class="preset-container preset-collapsible" id="customPresetsContainer" data-category="my" style="display:none">
+                <button type="button" class="preset-category-toggle">
+                  <i class="fa-solid fa-bookmark preset-cat-icon" style="color:#6366f1"></i>
+                  <span>My Presets</span>
+                  <button type="button" id="manageCustomPresetsBtn" class="btn-manage-presets">Manage</button>
+                  <i class="fa-solid fa-chevron-down preset-chevron"></i>
                 </button>
-                <button
-                  type="button"
-                  class="preset-chip"
-                  data-text="Focus on accessibility standards (WCAG 2.1 AA) including keyboard tab order, focus indicators, aria labels, and color contrast."
-                >
-                  Accessibility (WCAG)
-                </button>
-                <button
-                  type="button"
-                  class="preset-chip"
-                  data-text="Focus on responsive layouts across standard viewports (iPhone, Android, iPad), touch screen gestures, and portrait/landscape orientation."
-                >
-                  Mobile &amp; Responsive
-                </button>
-                <button
-                  type="button"
-                  class="preset-chip"
-                  data-text="Focus on page responsiveness under high latency (Slow 3G), server timeouts, rate limiting, rapid multi-clicks, and stress states."
-                >
-                  Performance &amp; Stress
-                </button>
-                <button
-                  type="button"
-                  class="preset-chip"
-                  data-text="Focus on internationalization including Unicode characters, CJK/Arabic language support, RTL layouts, and currency/date formatting."
-                >
-                  i18n &amp; Unicode
-                </button>
+                <div class="preset-chips-row preset-chips-collapsed" id="customPresetsRow"></div>
               </div>
             </div>
           </div>
@@ -464,7 +547,7 @@
                   name="screenshot"
                   accept="image/*"
                   multiple
-                  hidden
+                  class="file-input-hidden"
                 />
                 <div class="drop-zone-content">
                   <i class="fa-solid fa-cloud-arrow-up upload-icon"></i>
@@ -479,14 +562,19 @@
                   >
                 </div>
                 <div id="previewContainer" class="preview-container hidden">
-                  <div id="previewGrid" class="preview-grid"></div>
-                  <button
-                    type="button"
-                    id="removeImgBtn"
-                    class="btn-remove-img"
-                  >
-                    <i class="fa-solid fa-trash-can"></i> Clear All
-                  </button>
+                  <div class="preview-header">
+                    <span id="previewCounter" class="preview-counter"></span>
+                    <span class="preview-footer-hint">
+                      <i class="fa-solid fa-circle-info"></i>
+                      Click to zoom &bull; Ctrl+V to paste
+                    </span>
+                    <button type="button" id="removeImgBtn" class="btn-remove-img">
+                      <i class="fa-solid fa-trash-can"></i> Clear All
+                    </button>
+                  </div>
+                  <div class="preview-grid-wrapper">
+                    <div id="previewGrid" class="preview-grid"></div>
+                  </div>
                 </div>
               </div>
               <!-- AI Detect Module Button -->
@@ -502,8 +590,19 @@
               <span class="btn-text">Generate Test Plan</span>
               <i class="fa-solid fa-arrow-right btn-icon"></i>
             </button>
+            <div class="field-error form-submit-error" id="screenshotError"></div>
           </div>
         </form>
+
+        <div class="glass-card recent-card">
+          <h2 class="card-title">
+            <i class="fa-solid fa-clock-rotate-left header-icon text-accent"></i>
+            <span>Recent Generations</span>
+          </h2>
+          <div id="recentList" class="recent-list">
+            <div class="recent-empty">No recent output yet.</div>
+          </div>
+        </div>
 
         <!-- Generated Files Library Section -->
         <div class="glass-card library-card">
@@ -678,6 +777,34 @@
       </div>
     </div>
 
+    <!-- Screenshot Zoom / Context Modal -->
+    <div id="screenZoomModal" class="modal-overlay hidden">
+      <div class="modal-content screen-zoom-content">
+        <div class="screen-zoom-header">
+          <div>
+            <h2 id="screenZoomTitle">Screen Preview</h2>
+            <p>Review the screenshot and edit its flow context.</p>
+          </div>
+          <button id="screenZoomCloseBtn" class="btn-close-preview" type="button" title="Close preview">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+        <div class="screen-zoom-body">
+          <div class="screen-zoom-image-wrap">
+            <img id="screenZoomImage" alt="Selected screenshot preview" />
+          </div>
+          <label class="screen-zoom-context-label" for="screenZoomContext">Screen context</label>
+          <textarea
+            id="screenZoomContext"
+            class="screen-zoom-context"
+            rows="4"
+            maxlength="280"
+            placeholder="Example: Dashboard utama. Area merah adalah entity card yang bisa diklik."
+          ></textarea>
+        </div>
+      </div>
+    </div>
+
     <!-- Delete Confirmation Modal -->
     <div id="deleteModal" class="modal-overlay hidden">
       <div class="modal-content delete-modal-content">
@@ -704,7 +831,32 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=1781522016"></script>
+    <!-- Save Preset Modal -->
+    <div id="savePresetModal" class="sp-modal-overlay" style="display:none" role="dialog" aria-modal="true">
+      <div class="sp-modal-box">
+        <div class="sp-modal-header">
+          <i class="fa-solid fa-bookmark" style="color:#6366f1"></i>
+          <span>Save as Preset</span>
+        </div>
+        <div class="sp-modal-body">
+          <label class="sp-label" for="spName">Name</label>
+          <input id="spName" type="text" class="sp-input" maxlength="40" placeholder="e.g. Mobile regression focus">
+          <label class="sp-label" for="spCategory">Save to category</label>
+          <select id="spCategory" class="sp-select">
+            <option value="coverage">Coverage Focus</option>
+            <option value="sut">SUT Type</option>
+            <option value="focus">Focus Mode</option>
+            <option value="my" selected>My Presets</option>
+          </select>
+        </div>
+        <div class="sp-modal-actions">
+          <button type="button" id="spCancelBtn" class="btn-secondary">Cancel</button>
+          <button type="button" id="spConfirmBtn" class="btn-primary">Save Preset</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/app.js?v=1781700027"></script>
     <!-- Toast Notification Container -->
     <div id="toastContainer" class="toast-container"></div>
   </body>

@@ -1,0 +1,8 @@
+flask
+openpyxl
+Pillow
+google-generativeai
+pydantic
+cryptography
+requests
+pytest

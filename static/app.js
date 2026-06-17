@@ -33,6 +33,11 @@ document.addEventListener("DOMContentLoaded", () => {
     }, duration);
   }
 
+  function shortenModelLabel(label, maxLength = 42) {
+    const text = String(label || "").replace(/\s+/g, " ").trim();
+    return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+  }
+
   // ═══════════════════════════════════════════════════════
   // DOM ELEMENTS
   // ═══════════════════════════════════════════════════════
@@ -49,6 +54,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const providerSelect = document.getElementById("provider_select");
   const apiKeyStatus = document.getElementById("apiKeyStatus");
   const apiKeyLabel = document.getElementById("api_key_label");
+  const apiKeyGroup = document.getElementById("apiKeyGroup");
+  const routerInfo = document.getElementById("routerInfo");
+  const routerStatus = document.getElementById("routerStatus");
+  const routerTestBtn = document.getElementById("routerTestBtn");
 
   const dropZone = document.getElementById("dropZone");
   const screenshotInput = document.getElementById("screenshot");
@@ -74,6 +83,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const reportModel = document.getElementById("reportModel");
   const reportRepair = document.getElementById("reportRepair");
   const reportWarnings = document.getElementById("reportWarnings");
+  const resultPreview = document.getElementById("resultPreview");
+  const resultPreviewBody = document.getElementById("resultPreviewBody");
+  const resultPreviewMeta = document.getElementById("resultPreviewMeta");
   const xlsxFilename = document.getElementById("xlsxFilename");
   const pyFilename = document.getElementById("pyFilename");
   const pyFileRow = document.getElementById("pyFileRow");
@@ -81,14 +93,186 @@ document.addEventListener("DOMContentLoaded", () => {
   const previewResultBtn = document.getElementById("previewResultBtn");
   const downloadPyBtn = document.getElementById("downloadPyBtn");
   const resetBtn = document.getElementById("resetBtn");
+  const recentList = document.getElementById("recentList");
+  const modelHealthBadge = document.getElementById("modelHealthBadge");
+  const pageTitleError = document.getElementById("pageTitleError");
+  const idPrefixError = document.getElementById("idPrefixError");
+  const modelError = document.getElementById("modelError");
+  const screenshotError = document.getElementById("screenshotError");
+  const screenZoomModal = document.getElementById("screenZoomModal");
+  const screenZoomTitle = document.getElementById("screenZoomTitle");
+  const screenZoomImage = document.getElementById("screenZoomImage");
+  const screenZoomContext = document.getElementById("screenZoomContext");
+  const screenZoomCloseBtn = document.getElementById("screenZoomCloseBtn");
+  const resultExportToggleBtn = document.getElementById("resultExportToggleBtn");
+  const resultExportMenu = document.getElementById("resultExportMenu");
+  const routerNotFound = document.getElementById("routerNotFound");
+  const routerConnectedRow = document.getElementById("routerConnectedRow");
+  const routerRetryBtn = document.getElementById("routerRetryBtn");
+  let _resultXlsxFilename = null;
 
   let progressInterval = null;
   let fileProcessingPromise = null;
+  let pingRequestId = 0;
+  let isGenerating = false;
+  let isDetecting = false;
+  let activeZoomFile = null;
+  let activeZoomObjectUrl = "";
+  const modelHealthCache = new Map();
+  let routerConnected = false;
+  const _providerState = {};
+
+  function getSelectedModelValue() {
+    return modelNameSelect?.selectedOptions?.[0]?.value || modelNameSelect?.value || "";
+  }
+
+  function getSelectedModelLabel() {
+    return modelNameSelect?.selectedOptions?.[0]?.title || modelNameSelect?.selectedOptions?.[0]?.textContent || getSelectedModelValue();
+  }
+
+  function autoGrowTextarea(textarea, { min = 52, max = 220 } = {}) {
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const nextHeight = Math.min(Math.max(textarea.scrollHeight, min), max);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > max ? "auto" : "hidden";
+  }
+
+  function bindAutoGrowTextarea(textarea, options) {
+    if (!textarea || textarea.dataset.autogrowBound === "1") return;
+    textarea.dataset.autogrowBound = "1";
+    textarea.classList.add("textarea-autogrow");
+    textarea.addEventListener("input", () => autoGrowTextarea(textarea, options));
+    requestAnimationFrame(() => autoGrowTextarea(textarea, options));
+  }
+
+  function setFieldError(element, message) {
+    if (!element) return;
+    element.textContent = message || "";
+    element.classList.toggle("visible", Boolean(message));
+  }
+
+  function clearInlineErrors() {
+    [pageTitleError, idPrefixError, modelError, screenshotError].forEach((el) => setFieldError(el, ""));
+  }
+
+  function validateBeforeSubmit() {
+    clearInlineErrors();
+    let valid = true;
+    if (!pageTitleInput.value.trim()) {
+      setFieldError(pageTitleError, "Page or module title is required.");
+      valid = false;
+    }
+    if (!idPrefixInput.value.trim()) {
+      setFieldError(idPrefixError, "TC-ID prefix is required.");
+      valid = false;
+    }
+    if (!getSelectedModelValue()) {
+      setFieldError(modelError, "Choose a model before generating.");
+      valid = false;
+    }
+    if (selectedFiles.length === 0) {
+      setFieldError(screenshotError, "Upload at least one screenshot.");
+      valid = false;
+    }
+    return valid;
+  }
+
+  function modelHealthKey(provider = providerSelect?.value, model = getSelectedModelValue()) {
+    return `${provider || ""}:${model || ""}`;
+  }
+
+  function updateModelHealthBadge() {
+    if (!modelHealthBadge) return;
+    const item = modelHealthCache.get(modelHealthKey());
+    modelHealthBadge.className = "model-health-badge unknown";
+    modelHealthBadge.textContent = "Untested";
+    modelHealthBadge.title = "No local generation history for this model yet.";
+    if (!getSelectedModelValue()) {
+      modelHealthBadge.textContent = "No model";
+      return;
+    }
+    if (!item) return;
+    if (item.success_count > 0 && item.last_status === "completed") {
+      modelHealthBadge.className = "model-health-badge healthy";
+      modelHealthBadge.textContent = "Stable";
+    } else if (item.failure_count > 0) {
+      modelHealthBadge.className = "model-health-badge risky";
+      modelHealthBadge.textContent = "Failed before";
+    }
+    modelHealthBadge.title = `${item.success_count || 0} successful, ${item.failure_count || 0} failed local run(s).`;
+  }
+
+  async function loadModelHealth() {
+    try {
+      const response = await fetch("/api/model-health", { cache: "no-store" });
+      const data = await response.json();
+      modelHealthCache.clear();
+      if (data.success && Array.isArray(data.models)) {
+        data.models.forEach((item) => {
+          modelHealthCache.set(`${item.provider || ""}:${item.model_name || ""}`, item);
+        });
+      }
+    } catch {
+      modelHealthCache.clear();
+    }
+    updateModelHealthBadge();
+  }
+
+  function renderResultPreview(cases) {
+    if (!resultPreview || !resultPreviewBody) return;
+    const rows = Array.isArray(cases) ? cases.filter(Boolean).slice(0, 5) : [];
+    resultPreview.classList.toggle("hidden", rows.length === 0);
+    resultPreviewBody.innerHTML = "";
+    if (resultPreviewMeta) resultPreviewMeta.textContent = `${rows.length} shown`;
+    rows.forEach((tc) => {
+      const tr = document.createElement("tr");
+      [tc.tc_id, tc.scenario, tc.case_type, tc.expected].forEach((value) => {
+        const td = document.createElement("td");
+        td.textContent = value || "-";
+        tr.appendChild(td);
+      });
+      resultPreviewBody.appendChild(tr);
+    });
+  }
+
+  function renderRecentGenerations(files) {
+    if (!recentList) return;
+    const recent = [...files].sort((a, b) => (b.modified || 0) - (a.modified || 0)).slice(0, 5);
+    recentList.innerHTML = "";
+    if (!recent.length) {
+      recentList.innerHTML = '<div class="recent-empty">No recent output yet.</div>';
+      return;
+    }
+    recent.forEach((file) => {
+      const item = document.createElement("div");
+      item.className = "recent-item";
+      const date = new Date((file.modified || 0) * 1000);
+      item.innerHTML = `
+        <div class="recent-main">
+          <i class="fa-solid fa-file-excel"></i>
+          <div class="recent-copy">
+            <span class="recent-name"></span>
+            <span class="recent-meta">${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+          </div>
+        </div>
+        <div class="recent-actions">
+          <button type="button" class="btn-mini preview">Preview</button>
+          <a class="btn-mini" href="/api/export/${encodeURIComponent(file.name)}/xlsx">Export</a>
+        </div>`;
+      item.querySelector(".recent-name").textContent = file.name;
+      item.querySelector(".preview").addEventListener("click", () => openPreview(file.name));
+      recentList.appendChild(item);
+    });
+  }
 
   const MAX_SCREENSHOTS = 10;
   const CLIENT_IMAGE_MAX_SIDE = 1600;
   const CLIENT_IMAGE_QUALITY = 0.84;
   const CLIENT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+  const MODEL_SEARCH_THRESHOLD = 8;
+  let modelCombo = null;
+  const selectCombos = new Map();
 
   function fileSignature(file) {
     return `${file.name}|${file.size}|${file.lastModified}`;
@@ -122,6 +306,161 @@ document.addEventListener("DOMContentLoaded", () => {
       img.onerror = () => reject(new Error('Failed to decode image.'));
       img.src = dataUrl;
     });
+  }
+
+  function initSelectCombobox(selectEl, { searchThreshold = Number.POSITIVE_INFINITY } = {}) {
+    if (!selectEl || selectCombos.has(selectEl)) return selectCombos.get(selectEl);
+    selectEl.classList.add("native-model-select");
+    selectEl.closest(".select-wrapper")?.classList.add("custom-select-wrapper");
+    const combo = document.createElement("div");
+    combo.className = "model-combobox";
+    combo.innerHTML = `
+      <button class="model-combobox-trigger" type="button" role="combobox" aria-haspopup="listbox" aria-expanded="false">
+        <span class="model-combobox-value"></span>
+        <i class="fa-solid fa-chevron-down model-combobox-chevron" aria-hidden="true"></i>
+      </button>
+      <div class="model-combobox-menu" role="presentation">
+        <div class="model-combobox-search-wrap">
+          <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+          <input class="model-combobox-search" type="search" autocomplete="off" placeholder="Search..." />
+        </div>
+        <div class="model-combobox-list" role="listbox"></div>
+      </div>`;
+    selectEl.insertAdjacentElement("afterend", combo);
+
+    const comboApi = {
+      select: selectEl,
+      root: combo,
+      trigger: combo.querySelector(".model-combobox-trigger"),
+      value: combo.querySelector(".model-combobox-value"),
+      menu: combo.querySelector(".model-combobox-menu"),
+      searchWrap: combo.querySelector(".model-combobox-search-wrap"),
+      search: combo.querySelector(".model-combobox-search"),
+      list: combo.querySelector(".model-combobox-list"),
+      searchThreshold,
+    };
+
+    comboApi.trigger.addEventListener("click", () => {
+      if (selectEl.disabled) return;
+      setSelectComboOpen(comboApi, !comboApi.root.classList.contains("open"));
+    });
+    comboApi.search.addEventListener("input", () => renderSelectComboOptions(comboApi, comboApi.search.value));
+    comboApi.search.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") setSelectComboOpen(comboApi, false);
+    });
+    selectEl.addEventListener("change", () => updateSelectCombobox(selectEl));
+    selectCombos.set(selectEl, comboApi);
+    updateSelectCombobox(selectEl);
+    return comboApi;
+  }
+
+  document.addEventListener("click", (event) => {
+    selectCombos.forEach((combo) => {
+      if (!combo.root.contains(event.target)) setSelectComboOpen(combo, false);
+    });
+  });
+
+  window.addEventListener("resize", () => {
+    selectCombos.forEach((combo) => {
+      if (combo.root.classList.contains("open")) positionSelectComboMenu(combo);
+    });
+  });
+
+  function initModelCombobox() {
+    modelCombo = initSelectCombobox(modelNameSelect, { searchThreshold: MODEL_SEARCH_THRESHOLD });
+  }
+
+  function getSelectComboOptions(combo) {
+    if (!combo?.select) return [];
+    return Array.from(combo.select.options).map((option) => ({
+      value: option.value,
+      label: option.title || option.textContent || option.value,
+      display: option.textContent || option.title || option.value,
+      disabled: option.disabled,
+      selected: option.selected,
+    }));
+  }
+
+  function positionSelectComboMenu(combo) {
+    if (!combo) return;
+    const rect = combo.root.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom - 12;
+    const spaceAbove = rect.top - 12;
+    const openUp = spaceBelow < 220 && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(180, Math.min(320, openUp ? spaceAbove : spaceBelow));
+    combo.root.classList.toggle("open-up", openUp);
+    combo.menu.style.maxHeight = `${maxHeight}px`;
+  }
+
+  function setSelectComboOpen(combo, open) {
+    if (!combo) return;
+    if (open) {
+      selectCombos.forEach((otherCombo) => {
+        if (otherCombo !== combo) setSelectComboOpen(otherCombo, false);
+      });
+    }
+    combo.root.classList.toggle("open", open);
+    combo.trigger.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) {
+      combo.search.value = "";
+      renderSelectComboOptions(combo);
+      positionSelectComboMenu(combo);
+      if (getSelectComboOptions(combo).length > combo.searchThreshold) {
+        requestAnimationFrame(() => combo.search.focus());
+      }
+    }
+  }
+
+  function renderSelectComboOptions(combo, query = "") {
+    if (!combo) return;
+    const options = getSelectComboOptions(combo);
+    const needle = query.trim().toLowerCase();
+    const filtered = options.filter((option) => {
+      return !needle || `${option.label} ${option.value}`.toLowerCase().includes(needle);
+    });
+    combo.searchWrap.classList.toggle("hidden", options.length <= combo.searchThreshold);
+    combo.list.innerHTML = "";
+    if (!filtered.length) {
+      const empty = document.createElement("div");
+      empty.className = "model-combobox-empty";
+      empty.textContent = "No options found";
+      combo.list.appendChild(empty);
+      return;
+    }
+    filtered.forEach((option) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "model-combobox-option";
+      item.role = "option";
+      item.disabled = option.disabled;
+      item.setAttribute("aria-selected", option.selected ? "true" : "false");
+      item.title = option.label;
+      item.textContent = option.label;
+      item.addEventListener("click", () => {
+        if (option.disabled) return;
+        combo.select.value = option.value;
+        combo.select.dispatchEvent(new Event("change", { bubbles: true }));
+        updateSelectCombobox(combo.select);
+        setSelectComboOpen(combo, false);
+      });
+      combo.list.appendChild(item);
+    });
+  }
+
+  function updateSelectCombobox(selectEl) {
+    const combo = selectCombos.get(selectEl);
+    if (!combo) return;
+    const selected = selectEl.selectedOptions?.[0];
+    const label = selected?.title || selected?.textContent || selectEl.value || "Choose option";
+    combo.value.textContent = label;
+    combo.value.title = label;
+    combo.trigger.disabled = selectEl.disabled;
+    if (combo.root.classList.contains("open")) renderSelectComboOptions(combo, combo.search.value);
+  }
+
+  function updateModelCombobox() {
+    updateSelectCombobox(modelNameSelect);
+    updateModelHealthBadge();
   }
 
   async function compressImageFile(file) {
@@ -255,38 +594,157 @@ document.addEventListener("DOMContentLoaded", () => {
     },
   };
 
-  function populateModels(provider) {
+  async function populateModels(provider) {
     if (!modelNameSelect) return;
+    const previousModel = getSelectedModelValue();
     modelNameSelect.innerHTML = "";
-    const models = providerModels[provider] || [];
-    models.forEach((model) => {
-      const opt = document.createElement("option");
-      opt.value = model.value;
-      opt.textContent = model.label;
-      modelNameSelect.appendChild(opt);
+    if (provider === "9router") {
+      const optLoading = document.createElement("option");
+      optLoading.value = "";
+      optLoading.textContent = "Loading models...";
+      modelNameSelect.appendChild(optLoading);
+      modelNameSelect.disabled = true;
+      updateModelCombobox();
+      try {
+        const res = await fetch("/api/router/models");
+        const data = await res.json();
+        if (data.success && data.models && data.models.length > 0) {
+          modelNameSelect.innerHTML = "";
+          data.models.forEach((model) => {
+            const opt = document.createElement("option");
+            opt.value = model.value;
+            opt.textContent = shortenModelLabel(model.label || model.value);
+            opt.title = model.label || model.value;
+            modelNameSelect.appendChild(opt);
+          });
+          const hasPreviousModel = Array.from(modelNameSelect.options).some((option) => option.value === previousModel);
+          if (hasPreviousModel) {
+            modelNameSelect.value = previousModel;
+          } else if (data.default_model && Array.from(modelNameSelect.options).some((option) => option.value === data.default_model)) {
+            modelNameSelect.value = data.default_model;
+          } else {
+            modelNameSelect.selectedIndex = 0;
+          }
+          routerConnected = true;
+          if (routerNotFound) routerNotFound.classList.add("hidden");
+          if (routerConnectedRow) routerConnectedRow.classList.remove("hidden");
+          if (submitBtn) submitBtn.disabled = false;
+        } else {
+          throw new Error("No models returned");
+        }
+      } catch (err) {
+        routerConnected = false;
+        console.error("Failed to fetch 9Router models:", err);
+        modelNameSelect.innerHTML = "";
+        const optError = document.createElement("option");
+        optError.value = "";
+        optError.textContent = "9Router not detected";
+        optError.disabled = true;
+        optError.selected = true;
+        modelNameSelect.appendChild(optError);
+        if (routerNotFound) routerNotFound.classList.remove("hidden");
+        if (routerConnectedRow) routerConnectedRow.classList.add("hidden");
+        if (routerStatus) routerStatus.style.display = "none";
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.title = "9Router is not running. Start 9Router first or switch to another provider.";
+        }
+      } finally {
+        modelNameSelect.disabled = false;
+        updateModelCombobox();
+      }
+    } else {
+      const models = providerModels[provider] || [];
+      models.forEach((model) => {
+        const opt = document.createElement("option");
+        opt.value = model.value;
+        opt.textContent = shortenModelLabel(model.label || model.value);
+        opt.title = model.label || model.value;
+        modelNameSelect.appendChild(opt);
+      });
+      modelNameSelect.disabled = false;
+      updateModelCombobox();
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.title = ""; }
+      if (routerNotFound) routerNotFound.classList.add("hidden");
+      if (routerConnectedRow) routerConnectedRow.classList.remove("hidden");
+    }
+  }
+
+  if (routerRetryBtn) {
+    routerRetryBtn.addEventListener("click", async () => {
+      routerRetryBtn.disabled = true;
+      routerRetryBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Retrying...';
+      await populateModels("9router");
+      if (providerSelect.value === "9router") updateRouterSelectedStatus();
+      routerRetryBtn.disabled = false;
+      routerRetryBtn.innerHTML = '<i class="fa-solid fa-rotate-right"></i> Retry connection';
     });
   }
 
   function setApiKeyStatus(state) {
     // state: 'checking' | 'connected' | 'failed' | ''
+    const currentProvider = providerSelect?.value;
+    const targetStatusEl = (currentProvider === "9router") ? routerStatus : apiKeyStatus;
+    const otherStatusEl = (currentProvider === "9router") ? apiKeyStatus : routerStatus;
+
+    if (otherStatusEl) {
+      otherStatusEl.style.display = "none";
+    }
+
+    if (!targetStatusEl) return;
+
     if (!state) {
-      apiKeyStatus.style.display = "none";
+      targetStatusEl.style.display = "none";
       return;
     }
-    apiKeyStatus.style.display = "inline-flex";
+    targetStatusEl.style.display = "inline-flex";
     const cfg = {
       checking: { text: "Checking...", color: "#0f766e" },
       connected: { text: "Connected", color: "#10b981" },
-      failed: { text: "Unreachable", color: "#ef4444" },
+      failed: { text: currentProvider === "9router" ? "Route issue" : "Unreachable", color: "#ef4444" },
     };
     const c = cfg[state] || cfg.failed;
-    apiKeyStatus.textContent = c.text;
-    apiKeyStatus.style.color = c.color;
+    targetStatusEl.textContent = c.text;
+    targetStatusEl.style.color = c.color;
   }
 
-  function onProviderChange() {
+  async function onProviderChange() {
+    const prevProvider = Object.keys(_providerState).length > 0
+      ? providerSelect.dataset.lastProvider
+      : null;
+    if (prevProvider) {
+      _providerState[prevProvider] = {
+        model: getSelectedModelValue(),
+        apiKey: apiKeyInput ? apiKeyInput.value : "",
+      };
+    }
+
     const provider = providerSelect.value;
-    populateModels(provider);
+    providerSelect.dataset.lastProvider = provider;
+
+    if (provider === "9router") {
+      if (apiKeyGroup) apiKeyGroup.classList.add("hidden");
+      if (routerInfo) routerInfo.classList.remove("hidden");
+    } else {
+      if (apiKeyGroup) apiKeyGroup.classList.remove("hidden");
+      if (routerInfo) routerInfo.classList.add("hidden");
+    }
+
+    await populateModels(provider);
+
+    const saved = _providerState[provider];
+    if (saved) {
+      if (saved.model) {
+        const opt = Array.from(modelNameSelect.options).find(o => o.value === saved.model);
+        if (opt) {
+          modelNameSelect.value = saved.model;
+          updateModelCombobox();
+        }
+      }
+      if (saved.apiKey && apiKeyInput) {
+        apiKeyInput.value = saved.apiKey;
+      }
+    }
 
     const meta = providerMeta[provider];
     if (meta) {
@@ -294,35 +752,159 @@ document.addEventListener("DOMContentLoaded", () => {
       apiKeyInput.placeholder = meta.placeholder;
     }
     setApiKeyStatus("");
+
+    if (provider === "9router") {
+      updateRouterSelectedStatus();
+    } else {
+      await pingSelectedProvider();
+    }
   }
 
-  // Ping API key on blur
-  apiKeyInput.addEventListener("blur", async () => {
+  function updateRouterSelectedStatus() {
+    const modelName = getSelectedModelValue();
+    const modelLabel = getSelectedModelLabel();
+    const hasModel = Array.from(modelNameSelect.options).some(
+      (option) => option.value === modelName && !option.disabled,
+    );
+
+    if (!routerStatus) return;
+    if (hasModel && modelName) {
+      routerStatus.style.display = "inline-flex";
+      routerStatus.textContent = routerConnected ? `Connected — ${modelLabel}` : `Selected: ${modelLabel}`;
+      routerStatus.title = routerConnected ? "9Router dashboard is reachable" : modelName;
+      routerStatus.style.color = routerConnected ? "#10b981" : "#0f766e";
+      return;
+    }
+
+    routerStatus.style.display = "inline-flex";
+    routerStatus.textContent = "Select a 9Router model";
+    routerStatus.title = "";
+    routerStatus.style.color = "#ef4444";
+  }
+
+  async function pingSelectedProvider({ showFailureToast = true } = {}) {
     const key = apiKeyInput.value.trim();
     const provider = providerSelect.value;
+    const modelName = getSelectedModelValue();
+    const requestId = ++pingRequestId;
+
+    if (provider === "9router") {
+      updateRouterSelectedStatus();
+      return;
+    }
+
     if (!key) {
       setApiKeyStatus("");
       return;
     }
+
     setApiKeyStatus("checking");
     try {
       const fd = new FormData();
       fd.append("provider", provider);
       fd.append("api_key", key);
-      fd.append("model_name", modelNameSelect.value);
+      fd.append("model_name", modelName);
       const res = await fetch("/api/ping", { method: "POST", body: fd });
       const data = await res.json();
+      if (requestId !== pingRequestId) return;
       setApiKeyStatus(data.success ? "connected" : "failed");
-      if (!data.success) showToast(data.message, "warning", 8000);
+      if (!data.success && showFailureToast) showToast(data.message, "warning", 8000);
     } catch {
+      if (requestId !== pingRequestId) return;
       setApiKeyStatus("failed");
     }
-  });
+  }
 
+  async function testSelectedRouterModel() {
+    if (providerSelect.value !== "9router") return;
+    const modelName = getSelectedModelValue();
+    const modelLabel = getSelectedModelLabel();
+
+    if (!modelName) {
+      setApiKeyStatus("failed");
+      showToast("Select a 9Router model before testing the route.", "warning", 5000);
+      return;
+    }
+
+    const oldText = routerTestBtn?.textContent || "Test";
+    if (routerTestBtn) {
+      routerTestBtn.disabled = true;
+      routerTestBtn.textContent = "Test";
+      routerTestBtn.classList.add("is-loading");
+    }
+    setApiKeyStatus("checking");
+
+    try {
+      const fd = new FormData();
+      fd.append("provider", "9router");
+      fd.append("api_key", "");
+      fd.append("model_name", modelName);
+      const res = await fetch("/api/ping", { method: "POST", body: fd });
+      const data = await res.json();
+      routerConnected = !!data.success;
+      setApiKeyStatus(data.success ? "connected" : "failed");
+      if (routerStatus) {
+        routerStatus.textContent = data.success
+          ? `Connected — ${modelLabel}`
+          : `Not connected: ${modelLabel}`;
+        routerStatus.title = data.message || modelName;
+        routerStatus.style.color = data.success ? "#10b981" : "#ef4444";
+      }
+      showToast(
+        data.success ? `9Router route is ready for ${modelLabel}.` : data.message,
+        data.success ? "success" : "warning",
+        data.success ? 3500 : 8000,
+      );
+    } catch (err) {
+      setApiKeyStatus("failed");
+      showToast(`9Router test failed: ${err.message}`, "warning", 8000);
+    } finally {
+      if (routerTestBtn) {
+        routerTestBtn.disabled = false;
+        routerTestBtn.textContent = oldText;
+        routerTestBtn.classList.remove("is-loading");
+      }
+    }
+  }
+
+  // Ping API key on blur
+  apiKeyInput.addEventListener("blur", () => pingSelectedProvider());
+  routerTestBtn?.addEventListener("click", testSelectedRouterModel);
+
+  document.querySelectorAll(".select-wrapper select").forEach((selectEl) => {
+    initSelectCombobox(selectEl, { searchThreshold: MODEL_SEARCH_THRESHOLD });
+  });
+  initModelCombobox();
   providerSelect.addEventListener("change", onProviderChange);
+  modelNameSelect.addEventListener("change", () => {
+    updateModelCombobox();
+    setFieldError(modelError, "");
+    if (providerSelect.value === "9router") {
+      routerConnected = false;
+      updateRouterSelectedStatus();
+      return;
+    }
+    pingSelectedProvider();
+  });
 
   // Initialize on page load with default provider
   onProviderChange();
+  pageTitleInput.addEventListener("input", () => setFieldError(pageTitleError, ""));
+  idPrefixInput.addEventListener("input", () => setFieldError(idPrefixError, ""));
+  loadModelHealth();
+
+  // ═══════════════════════════════════════════════════════
+  // PRESET CATEGORY COLLAPSE TOGGLE
+  // ═══════════════════════════════════════════════════════
+
+  document.querySelectorAll(".preset-category-toggle").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      // Prevent the manage button inside from bubbling
+      if (e.target.closest(".btn-manage-presets")) return;
+      const container = btn.closest(".preset-collapsible");
+      if (container) container.classList.toggle("open");
+    });
+  });
 
   // ═══════════════════════════════════════════════════════
   // PRESET CHIPS — toggle-based with visual active state
@@ -357,34 +939,278 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // Clear Instructions button
+  // Character counter
+  const instructionsCounter = document.getElementById("instructionsCounter");
+  const savePresetBtn = document.getElementById("savePresetBtn");
   const clearInstructionsBtn = document.getElementById("clearInstructionsBtn");
+
+  function updateInstructionsCounter() {
+    if (!instructionsInput) return;
+    autoGrowTextarea(instructionsInput, { min: 64, max: 240 });
+    const len = instructionsInput.value.length;
+    const tokenEst = Math.round(len / 4);
+    if (instructionsCounter) {
+      instructionsCounter.textContent = `${len} chars (~${tokenEst} tokens)`;
+      instructionsCounter.classList.toggle("hidden", len === 0);
+      instructionsCounter.classList.toggle("instructions-counter--warn", tokenEst > 400);
+    }
+    if (savePresetBtn) savePresetBtn.classList.toggle("hidden", len === 0);
+    if (clearInstructionsBtn) clearInstructionsBtn.classList.toggle("hidden", len === 0);
+  }
+
+  if (instructionsInput) {
+    bindAutoGrowTextarea(instructionsInput, { min: 64, max: 240 });
+    instructionsInput.addEventListener("input", updateInstructionsCounter);
+    updateInstructionsCounter();
+  }
+
+  // Clear Instructions button
   if (clearInstructionsBtn && instructionsInput) {
     clearInstructionsBtn.addEventListener("click", () => {
       instructionsInput.value = "";
-      document
-        .querySelectorAll(".preset-chip.active")
-        .forEach((c) => c.classList.remove("active"));
+      document.querySelectorAll(".preset-chip.active").forEach((c) => c.classList.remove("active"));
       instructionsInput.dispatchEvent(new Event("input"));
       showToast("All instructions cleared.", "info", 1500);
     });
   }
 
+  // ── Custom presets (server-side, /api/presets) ──────────────────
+
+  function _makeUserChip(preset) {
+    const wrap = document.createElement("span");
+    wrap.className = "preset-chip-wrap";
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "preset-chip preset-chip--custom";
+    btn.setAttribute("data-text", preset.text);
+    btn.setAttribute("data-preset-id", preset.id);
+    btn.textContent = preset.name;
+    btn.addEventListener("click", () => {
+      const text = btn.getAttribute("data-text");
+      if (!instructionsInput) return;
+      if (btn.classList.contains("active")) {
+        btn.classList.remove("active");
+        const lines = instructionsInput.value.split("\n").filter(l => l.trim());
+        instructionsInput.value = lines.filter(l => l.trim() !== text.trim()).join("\n");
+      } else {
+        btn.classList.add("active");
+        instructionsInput.value = instructionsInput.value.trim()
+          ? instructionsInput.value.trim() + "\n" + text
+          : text;
+      }
+      instructionsInput.dispatchEvent(new Event("input"));
+    });
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "preset-chip-delete";
+    del.title = "Delete preset";
+    del.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+    del.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await fetch(`/api/presets/${preset.id}`, { method: "DELETE" });
+      wrap.remove();
+      showToast(`Deleted "${preset.name}"`, "info", 1500);
+      _refreshMyPresetsVisibility();
+    });
+
+    wrap.appendChild(btn);
+    wrap.appendChild(del);
+    return wrap;
+  }
+
+  function _refreshMyPresetsVisibility() {
+    const container = document.getElementById("customPresetsContainer");
+    const row = document.getElementById("customPresetsRow");
+    if (!container || !row) return;
+    const hasChips = row.querySelectorAll(".preset-chip-wrap").length > 0;
+    container.style.display = hasChips ? "" : "none";
+  }
+
+  async function loadCustomPresets() {
+    try {
+      const resp = await fetch("/api/presets");
+      const presets = await resp.json();
+      document.querySelectorAll(".preset-chip-wrap").forEach(el => el.remove());
+      const byCategory = {};
+      presets.forEach(p => {
+        const cat = p.category || "my";
+        if (!byCategory[cat]) byCategory[cat] = [];
+        byCategory[cat].push(p);
+      });
+      Object.entries(byCategory).forEach(([cat, items]) => {
+        const container = document.querySelector(`.preset-collapsible[data-category="${cat}"]`);
+        if (!container) return;
+        const row = container.querySelector(".preset-chips-row");
+        if (!row) return;
+        if (cat === "my") container.style.display = "";
+        items.forEach(preset => row.appendChild(_makeUserChip(preset)));
+      });
+      _refreshMyPresetsVisibility();
+    } catch (e) { /* server unreachable */ }
+  }
+
+  // Save preset modal
+  const savePresetModal = document.getElementById("savePresetModal");
+  const spName = document.getElementById("spName");
+  const spCategory = document.getElementById("spCategory");
+  const spConfirmBtn = document.getElementById("spConfirmBtn");
+  const spCancelBtn = document.getElementById("spCancelBtn");
+
+  function openSaveModal() {
+    if (!savePresetModal || !instructionsInput) return;
+    const text = instructionsInput.value.trim();
+    if (!text) return;
+    spName.value = text.slice(0, 35);
+    savePresetModal.style.display = "flex";
+    setTimeout(() => spName.select(), 50);
+  }
+
+  function closeSaveModal() {
+    if (savePresetModal) savePresetModal.style.display = "none";
+  }
+
+  if (savePresetBtn) savePresetBtn.addEventListener("click", openSaveModal);
+  if (spCancelBtn) spCancelBtn.addEventListener("click", closeSaveModal);
+  if (savePresetModal) {
+    savePresetModal.addEventListener("click", (e) => {
+      if (e.target === savePresetModal) closeSaveModal();
+    });
+  }
+  if (savePresetModal) {
+    savePresetModal.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeSaveModal();
+      if (e.key === "Enter" && spConfirmBtn) spConfirmBtn.click();
+    });
+  }
+
+  if (spConfirmBtn) {
+    spConfirmBtn.addEventListener("click", async () => {
+      const name = (spName ? spName.value : "").trim();
+      const text = instructionsInput ? instructionsInput.value.trim() : "";
+      if (!name || !text) { showToast("Name and text required.", "error", 1500); return; }
+      const category = spCategory ? spCategory.value : "my";
+      try {
+        const resp = await fetch("/api/presets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, text, category }),
+        });
+        const preset = await resp.json();
+        closeSaveModal();
+        const container = document.querySelector(`.preset-collapsible[data-category="${category}"]`);
+        if (container) {
+          const row = container.querySelector(".preset-chips-row");
+          if (row) row.appendChild(_makeUserChip(preset));
+          if (category === "my") container.style.display = "";
+          if (!container.classList.contains("open")) container.classList.add("open");
+        }
+        const catLabel = spCategory ? spCategory.options[spCategory.selectedIndex].text : category;
+        showToast(`Preset "${name}" saved to ${catLabel}!`, "success", 2000);
+      } catch (e) {
+        showToast("Failed to save preset.", "error", 2000);
+      }
+    });
+  }
+
+  const manageCustomPresetsBtn = document.getElementById("manageCustomPresetsBtn");
+  if (manageCustomPresetsBtn) {
+    manageCustomPresetsBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      showToast("Click the × on any chip to delete it.", "info", 2500);
+    });
+  }
+
+  loadCustomPresets();
+
   // ═══════════════════════════════════════════════════════
   // DRAG & DROP / FILE SELECTION HANDLERS
   // ═══════════════════════════════════════════════════════
   let selectedFiles = [];
+  const screenContexts = new Map();
+
+  function getScreenContext(file) {
+    return screenContexts.get(fileSignature(file)) || "";
+  }
+
+  function setScreenContext(file, value) {
+    const cleanValue = String(value || "").slice(0, 280);
+    screenContexts.set(fileSignature(file), cleanValue);
+    document.querySelectorAll(".screen-context-input").forEach((input) => {
+      if (input.dataset.contextKey === fileSignature(file) && input.value !== cleanValue) {
+        input.value = cleanValue;
+        autoGrowTextarea(input, { min: 52, max: 116 });
+      }
+    });
+  }
+
+  function closeScreenZoom() {
+    if (!screenZoomModal) return;
+    screenZoomModal.classList.add("hidden");
+    activeZoomFile = null;
+    if (activeZoomObjectUrl) {
+      URL.revokeObjectURL(activeZoomObjectUrl);
+      activeZoomObjectUrl = "";
+    }
+    if (screenZoomImage) screenZoomImage.removeAttribute("src");
+  }
+
+  function openScreenZoom(file, index) {
+    if (!screenZoomModal || !screenZoomImage || !screenZoomContext) return;
+    activeZoomFile = file;
+    if (activeZoomObjectUrl) URL.revokeObjectURL(activeZoomObjectUrl);
+    activeZoomObjectUrl = URL.createObjectURL(file);
+    screenZoomImage.src = activeZoomObjectUrl;
+    if (screenZoomTitle) screenZoomTitle.textContent = `Screen ${index + 1}`;
+    screenZoomContext.value = getScreenContext(file);
+    screenZoomContext.placeholder = index === 0
+      ? "Dashboard utama. Area merah adalah entity card yang bisa diklik."
+      : `Setelah aksi dari Screen ${index}, halaman/modal ini muncul.`;
+    screenZoomModal.classList.remove("hidden");
+    autoGrowTextarea(screenZoomContext, { min: 96, max: 180 });
+    requestAnimationFrame(() => screenZoomContext.focus());
+  }
+
+  function openFilePicker() {
+    if (!screenshotInput) return;
+    screenshotInput.value = "";
+    screenshotInput.click();
+  }
 
   // Click on dropzone triggers input click
   dropZone.addEventListener("click", (e) => {
-    // Prevent click if clicking inside preview container or delete buttons
-    if (e.target.closest("#previewContainer")) return;
-    screenshotInput.click();
+    const interactiveTarget = e.target.closest(
+      "button, a, textarea, input, .preview-thumb, .screen-context-input, .preview-item-delete",
+    );
+    if (interactiveTarget) return;
+    openFilePicker();
+  });
+
+  dropZoneContent?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openFilePicker();
+  });
+
+  dropZone.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openFilePicker();
+    }
   });
 
   // File input change
   screenshotInput.addEventListener("change", () => {
     void addFiles(screenshotInput.files);
+  });
+
+  screenZoomCloseBtn?.addEventListener("click", closeScreenZoom);
+  screenZoomModal?.addEventListener("click", (event) => {
+    if (event.target === screenZoomModal) closeScreenZoom();
+  });
+  bindAutoGrowTextarea(screenZoomContext, { min: 96, max: 180 });
+  screenZoomContext?.addEventListener("input", (event) => {
+    if (activeZoomFile) setScreenContext(activeZoomFile, event.target.value);
   });
 
   // Drag events
@@ -431,16 +1257,17 @@ document.addEventListener("DOMContentLoaded", () => {
       // Allow normal paste in form fields unless it's an image paste
       const clipboardData = e.clipboardData || window.clipboardData;
       if (!clipboardData) return;
-      const hasImage = Array.from(clipboardData.items).some((item) =>
-        item.type.startsWith("image/"),
-      );
+      const clipboardItems = Array.from(clipboardData.items || []);
+      const clipboardFiles = Array.from(clipboardData.files || []);
+      const hasImage = clipboardItems.some((item) => item.type.startsWith("image/"))
+        || clipboardFiles.some((file) => file.type && file.type.startsWith("image/"));
       if (!hasImage) return; // Let text paste go through normally
     }
 
     const clipboardData = e.clipboardData || window.clipboardData;
     if (!clipboardData) return;
 
-    const items = clipboardData.items;
+    const items = clipboardData.items || [];
     const pastedFiles = [];
 
     for (let i = 0; i < items.length; i++) {
@@ -458,6 +1285,12 @@ document.addEventListener("DOMContentLoaded", () => {
           pastedFiles.push(file);
         }
       }
+    }
+
+    if (pastedFiles.length === 0 && clipboardData.files && clipboardData.files.length > 0) {
+      Array.from(clipboardData.files).forEach((file) => {
+        if (file.type && file.type.startsWith("image/")) pastedFiles.push(file);
+      });
     }
 
     if (pastedFiles.length > 0) {
@@ -523,6 +1356,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       selectedFiles = [...selectedFiles, ...optimized];
+      if (selectedFiles.length > 0) setFieldError(screenshotError, "");
 
       if (optimized.length > 0 && (compressedCount > 0 || originalSize > optimized.reduce((sum, file) => sum + file.size, 0))) {
         const finalSize = optimized.reduce((sum, file) => sum + file.size, 0);
@@ -1078,11 +1912,13 @@ document.addEventListener("DOMContentLoaded", () => {
             <i class="fa-regular fa-folder-open empty-icon"></i>
             <p>No generated files found in <code>outputs/</code> directory.</p>
           </div>`;
+        renderRecentGenerations([]);
         return;
       }
 
       const tree = result.tree;
       const moduleNames = Object.keys(tree).sort();
+      const recentFiles = [];
       let pendingFragment = document.createDocumentFragment();
       let chunkCount = 0;
 
@@ -1091,6 +1927,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const moduleData = tree[moduleName];
         const excelFiles = moduleData.excel || [];
         const scriptFiles = moduleData.scripts || [];
+        excelFiles.forEach((file) => recentFiles.push(file));
         const totalFiles = excelFiles.length + scriptFiles.length;
         if (totalFiles === 0) continue;
 
@@ -1211,6 +2048,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (pendingFragment.childNodes.length > 0) {
         libraryList.appendChild(pendingFragment);
       }
+      renderRecentGenerations(recentFiles);
     } catch (error) {
       console.error("Error loading library:", error);
     }
@@ -1396,7 +2234,21 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Toggle export menu dropdown
+  // Hide export menus when clicking outside
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".export-dropdown-wrapper")) {
+      if (exportMenu && !exportMenu.classList.contains("hidden")) {
+        exportMenu.classList.add("hidden");
+        if (exportToggleBtn) exportToggleBtn.classList.remove("active");
+      }
+      if (resultExportMenu && !resultExportMenu.classList.contains("hidden")) {
+        resultExportMenu.classList.add("hidden");
+        if (resultExportToggleBtn) resultExportToggleBtn.classList.remove("active");
+      }
+    }
+  });
+
+  // Preview modal export toggle & items
   if (exportToggleBtn && exportMenu) {
     exportToggleBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1405,28 +2257,36 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Hide export menu when clicking outside
-  document.addEventListener("click", (e) => {
-    if (
-      exportMenu &&
-      !exportMenu.classList.contains("hidden") &&
-      !e.target.closest(".export-dropdown-wrapper")
-    ) {
-      exportMenu.classList.add("hidden");
-      exportToggleBtn.classList.remove("active");
-    }
-  });
-
-  // Handle export format item clicks
-  document.querySelectorAll(".export-item").forEach((item) => {
+  document.querySelectorAll(".export-item[data-format]").forEach((item) => {
     item.addEventListener("click", () => {
       const format = item.getAttribute("data-format");
       if (currentFilename && format) {
         if (exportMenu) exportMenu.classList.add("hidden");
         if (exportToggleBtn) exportToggleBtn.classList.remove("active");
-
         showToast(`Preparing ${format.toUpperCase()} export...`, "info", 3000);
         window.location.href = `/api/export/${currentFilename}/${format}`;
+      }
+    });
+  });
+
+  // Result panel export dropdown toggle
+  if (resultExportToggleBtn && resultExportMenu) {
+    resultExportToggleBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      resultExportToggleBtn.classList.toggle("active");
+      resultExportMenu.classList.toggle("hidden");
+    });
+  }
+
+  // Result panel export items
+  document.querySelectorAll(".export-item[data-result-format]").forEach((item) => {
+    item.addEventListener("click", () => {
+      const format = item.getAttribute("data-result-format");
+      if (_resultXlsxFilename && format) {
+        if (resultExportMenu) resultExportMenu.classList.add("hidden");
+        if (resultExportToggleBtn) resultExportToggleBtn.classList.remove("active");
+        showToast(`Preparing ${format.toUpperCase()} export...`, "info", 3000);
+        window.location.href = `/api/export/${_resultXlsxFilename}/${format}`;
       }
     });
   });
@@ -1535,7 +2395,7 @@ document.addEventListener("DOMContentLoaded", () => {
             td.dataset.coordinate = coord;
             td.dataset.originalValue = cell.value;
             td.dataset.sheetName = sheetName;
-            
+
             // Listen for changes
             td.addEventListener("blur", () => {
               const currentVal = td.innerText.trim();
@@ -1550,7 +2410,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 } else {
                   excelChanges[sheetName].push({ coordinate: coord, value: currentVal });
                 }
-                
+
                 if (previewSaveBtn) {
                   previewSaveBtn.classList.remove("hidden");
                 }
@@ -1713,14 +2573,27 @@ document.addEventListener("DOMContentLoaded", () => {
     e.preventDefault();
     console.log("[DEBUG] Form submitted");
 
+    if (isGenerating) {
+      showToast("Generation is already running. Please wait for it to finish.", "info", 2200);
+      return;
+    }
+    isGenerating = true;
+
     if (fileProcessingPromise) {
       showToast("Optimizing uploaded screenshots. Please wait a moment.", "info", 1800);
       await fileProcessingPromise;
     }
 
+    if (!validateBeforeSubmit()) {
+      showToast("Please complete the highlighted fields.", "warning", 2400);
+      isGenerating = false;
+      return;
+    }
+
     if (selectedFiles.length === 0) {
       console.log("[DEBUG] No files selected — aborting");
       showToast("Please upload at least one screenshot.", "warning");
+      isGenerating = false;
       return;
     }
     console.log(
@@ -1760,10 +2633,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const formData = new FormData();
     selectedFiles.forEach((file) => {
       formData.append("screenshot", file);
+      formData.append("screen_context", getScreenContext(file));
     });
     formData.append("page_title", pageTitleInput.value);
     formData.append("id_prefix", idPrefixInput.value);
-    formData.append("model_name", modelNameSelect.value);
+    const selectedModelName = getSelectedModelValue();
+    formData.append("model_name", selectedModelName);
     formData.append("api_key", apiKeyInput.value);
     formData.append("provider", providerSelect.value);
     formData.append("instructions", instructionsInput.value);
@@ -1777,7 +2652,7 @@ document.addEventListener("DOMContentLoaded", () => {
       "| provider:",
       providerSelect.value,
       "| model:",
-      modelNameSelect.value,
+      selectedModelName,
       "| gen_depth:",
       genDepthSelect ? genDepthSelect.value : "fast"
     );
@@ -1813,14 +2688,16 @@ document.addEventListener("DOMContentLoaded", () => {
           }[jobResult.generation_mode || genDepthSelect?.value] || "Fast";
           statMode.textContent = modeLabel;
           reportProvider.textContent = jobResult.provider || providerSelect.value || "-";
-          reportModel.textContent = jobResult.model_name || modelNameSelect.value || "-";
+          reportModel.textContent = jobResult.model_name || getSelectedModelValue() || "-";
           reportRepair.textContent = `${jobResult.auto_repair_count ?? 0} fixes`;
           const warnings = Array.isArray(jobResult.quality_warnings)
             ? jobResult.quality_warnings.filter(Boolean)
             : [];
           reportWarnings.textContent = warnings.length ? warnings.join(", ") : "None";
+          renderResultPreview(jobResult.preview_cases);
           xlsxFilename.textContent = jobResult.xlsx_file;
           downloadBtn.href = jobResult.download_url;
+          _resultXlsxFilename = jobResult.xlsx_file;
           previewResultBtn.disabled = !jobResult.xlsx_file;
           previewResultBtn.onclick = () => {
             if (jobResult.xlsx_file) openPreview(jobResult.xlsx_file);
@@ -1837,6 +2714,7 @@ document.addEventListener("DOMContentLoaded", () => {
             downloadPyBtn.setAttribute("aria-hidden", "true");
           }
           loadLibrary();
+          loadModelHealth();
 
           stopProgress(true, () => {
             resultCard.classList.remove("hidden");
@@ -1856,6 +2734,10 @@ document.addEventListener("DOMContentLoaded", () => {
           stopProgress(false, result.message || "Generation could not be started.");
         }
       } else {
+        if (providerSelect.value === "9router") {
+          routerConnected = false;
+          updateRouterSelectedStatus();
+        }
         stopProgress(false, result.message);
       }
     } catch (error) {
@@ -1866,8 +2748,13 @@ document.addEventListener("DOMContentLoaded", () => {
       } else if (errorMsg === "Failed to fetch") {
         errorMsg = "Failed to connect to the server. The Flask server may have crashed or restarted during processing. Please check that the server is running (python app.py) and try again.";
       }
+      if (providerSelect.value === "9router") {
+        routerConnected = false;
+        updateRouterSelectedStatus();
+      }
       stopProgress(false, errorMsg);
     }
+    isGenerating = false;
   });
 
   // ═══════════════════════════════════════════════════════
@@ -1879,9 +2766,11 @@ document.addEventListener("DOMContentLoaded", () => {
     idPrefixInput.value = "";
     apiKeyInput.value = "";
     providerSelect.value = "gemini";
+    Object.keys(_providerState).forEach(k => delete _providerState[k]);
+    delete providerSelect.dataset.lastProvider;
     onProviderChange();
     instructionsInput.value = "";
-    if (genDepthSelect) genDepthSelect.value = "fast";
+    if (genDepthSelect) genDepthSelect.value = "ultra";
     if (generateScriptToggle) generateScriptToggle.checked = false;
 
     selectedFiles = [];
@@ -1903,6 +2792,7 @@ document.addEventListener("DOMContentLoaded", () => {
     reportModel.textContent = "-";
     reportRepair.textContent = "0 fixes";
     reportWarnings.textContent = "None";
+    renderResultPreview([]);
     previewResultBtn.disabled = true;
     previewResultBtn.onclick = null;
 
@@ -1925,6 +2815,7 @@ document.addEventListener("DOMContentLoaded", () => {
       previewContainer.classList.add("hidden");
       dropZoneContent.classList.remove("hidden");
       screenshotInput.value = "";
+      screenContexts.clear();
       detectBtn.classList.add("hidden");
       suggestionBar.classList.add("hidden");
       suggestionBar.innerHTML = "";
@@ -1935,9 +2826,19 @@ document.addEventListener("DOMContentLoaded", () => {
     previewContainer.classList.remove("hidden");
     detectBtn.classList.remove("hidden");
 
+    const counterEl = document.getElementById("previewCounter");
+    if (counterEl) counterEl.textContent = `${selectedFiles.length} / 10 screens`;
+
     selectedFiles.forEach((file, index) => {
       const itemDiv = document.createElement("div");
       itemDiv.className = "preview-item";
+      itemDiv.title = "Click screenshot to enlarge and edit context";
+      const thumbDiv = document.createElement("div");
+      thumbDiv.className = "preview-thumb";
+      thumbDiv.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openScreenZoom(file, index);
+      });
       const img = document.createElement("img");
       img.loading = "lazy";
       const objectUrl = URL.createObjectURL(file);
@@ -1946,6 +2847,17 @@ document.addEventListener("DOMContentLoaded", () => {
       const labelSpan = document.createElement("span");
       labelSpan.className = "preview-item-label";
       labelSpan.textContent = `Screen ${index + 1}`;
+      const contextInput = document.createElement("textarea");
+      contextInput.className = "screen-context-input";
+      contextInput.dataset.contextKey = fileSignature(file);
+      contextInput.rows = 2;
+      contextInput.maxLength = 280;
+      contextInput.placeholder = index === 0
+        ? "Context: dashboard utama, area merah bisa diklik..."
+        : `Context: setelah aksi dari Screen ${index}...`;
+      contextInput.value = getScreenContext(file);
+      contextInput.addEventListener("click", (e) => e.stopPropagation());
+      contextInput.addEventListener("input", (e) => setScreenContext(file, e.target.value));
       const deleteBtn = document.createElement("button");
       deleteBtn.type = "button";
       deleteBtn.className = "preview-item-delete";
@@ -1953,28 +2865,46 @@ document.addEventListener("DOMContentLoaded", () => {
       deleteBtn.title = "Remove screen";
       deleteBtn.addEventListener("click", (e) => {
         e.stopPropagation();
+        screenContexts.delete(fileSignature(file));
         selectedFiles.splice(index, 1);
         renderPreviews();
       });
-      itemDiv.appendChild(img);
-      itemDiv.appendChild(labelSpan);
-      itemDiv.appendChild(deleteBtn);
+      thumbDiv.appendChild(img);
+      thumbDiv.appendChild(labelSpan);
+      thumbDiv.appendChild(deleteBtn);
+      itemDiv.appendChild(thumbDiv);
+      itemDiv.appendChild(contextInput);
       previewGrid.appendChild(itemDiv);
     });
+
+    // Add-more tile (only if < 10)
+    if (selectedFiles.length < MAX_SCREENSHOTS) {
+      const addTile = document.createElement("button");
+      addTile.type = "button";
+      addTile.className = "preview-add-tile";
+      addTile.innerHTML = '<i class="fa-solid fa-plus"></i><span>Add more</span>';
+      addTile.addEventListener("click", (e) => { e.stopPropagation(); openFilePicker(); });
+      previewGrid.appendChild(addTile);
+    }
+
+    previewGrid.closest(".preview-grid-wrapper").scrollTop = previewGrid.scrollHeight;
   }
 
   removeImgBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     selectedFiles = [];
+    screenContexts.clear();
     renderPreviews();
   });
 
   // Detect module via API
   detectBtn.addEventListener("click", async () => {
     if (selectedFiles.length === 0) return;
+    if (isDetecting) return;
+    isDetecting = true;
 
     const apiKey = apiKeyInput.value.trim();
-    const modelName = modelNameSelect.value;
+    const modelName = getSelectedModelValue();
 
     if (!apiKey && !window._envApiKeyAvailable) {
       // soft warning — still attempt, server will reject if no env key
@@ -2009,6 +2939,7 @@ document.addEventListener("DOMContentLoaded", () => {
       suggestionBar.innerHTML = `<span class="suggestion-label" style="color:#ef4444"><i class="fa-solid fa-circle-exclamation"></i> ${err.message}</span>`;
       suggestionBar.classList.remove("hidden");
     } finally {
+      isDetecting = false;
       detectBtn.disabled = false;
       detectBtnText.innerHTML = "Auto-Detect Module Type";
       // Re-insert icon
@@ -2124,8 +3055,3 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 });
-
-
-
-
-
