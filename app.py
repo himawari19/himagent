@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import traceback
 import hashlib
 import threading
@@ -9,17 +10,15 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from datetime import datetime
-from flask import Flask, render_template, request, send_file, jsonify
+from flask import Flask, render_template, request, send_file, jsonify, Response, stream_with_context
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from werkzeug.utils import secure_filename
 from PIL import Image
 import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
-from openpyxl.formatting.rule import CellIsRule
 import google.generativeai as genai
 from pydantic import BaseModel, Field
 from typing import Literal
-from cryptography.fernet import Fernet
 from uuid import uuid4
 from core.cache_store import get_generation_cache, set_generation_cache
 from core.file_ops import (
@@ -27,19 +26,20 @@ from core.file_ops import (
     find_file_in_outputs as core_find_file_in_outputs,
     list_generated_tree,
     safe_filename,
+    outputs_dir as _outputs_dir,
 )
 from core.quality import evaluate_quality
 from core.upload_validation import validate_screenshot_payload
 from core.prompts import get_system_prompt, get_few_shot_hint
 from core.jobs import (
     _GENERATION_LOCK,
-    _GENERATION_JOBS,
     _GENERATION_CACHE,
     _GENERATION_ACTIVE_BY_CACHE,
     _GENERATION_DB_PATH,
     _set_job_state,
     _get_job_state,
 )
+from core.sheets import build_main_testplan
 from core.providers import (
     google_exceptions,
     detect_provider,
@@ -54,31 +54,25 @@ from core.router import (
     ROUTER_DEFAULT_MODEL,
     normalize_router_model,
     format_router_ping_error,
-    ping_router_model_once,
     test_router_model_route,
     fetch_router_models,
 )
 from core.stats import (
-    get_outputs_dir as _outputs_dir,
     build_outputs_file_map as _build_outputs_file_map,
     filename_to_module_label as _filename_to_module_label,
     count_test_cases_from_workbook as _count_test_cases_from_workbook,
 )
 from core.exports import export_workbook
 from core.preview import get_file_preview
-from core.detection import detect_module_from_screenshot, resolve_api_key
-
-# -----------------------------------------------------------------------------
-# EPHEMERAL ENCRYPTION KEY (generated fresh each server start)
-# -----------------------------------------------------------------------------
-_FERNET_KEY = Fernet.generate_key()
-_fernet = Fernet(_FERNET_KEY)
+from core.detection import detect_module_from_screenshot
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'uploads')
-app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # Disable static file caching in development
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB max upload
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+limiter = Limiter(get_remote_address, app=app, default_limits=[], storage_uri="memory://")
 
 # -----------------------------------------------------------------------------
 # OUTPUT DIRECTORY INIT
@@ -134,27 +128,37 @@ class ChecklistSchema(BaseModel):
 
 
 def _make_generation_cache_key(payload):
-    hasher = hashlib.sha256()
-    key_parts = [
-        payload.get("page_title", ""),
-        payload.get("id_prefix", ""),
-        payload.get("model_name", ""),
-        payload.get("instructions", ""),
-        payload.get("provider", ""),
-        payload.get("gen_depth", ""),
+    h = hashlib.sha256()
+    text_parts = [
+        payload.get("page_title", ""), payload.get("id_prefix", ""),
+        payload.get("model_name", ""), payload.get("instructions", ""),
+        payload.get("provider", ""), payload.get("gen_depth", ""),
         "1" if payload.get("generate_script") else "0",
+        *payload.get("screen_contexts", []),
     ]
-    for context in payload.get("screen_contexts", []):
-        key_parts.append(context)
-    for part in key_parts:
-        hasher.update(str(part).encode("utf-8", errors="ignore"))
-        hasher.update(b"\0")
-    for file_item in payload.get("files", []):
-        hasher.update(file_item.get("filename", "").encode("utf-8", errors="ignore"))
-        hasher.update(b"\0")
-        hasher.update(file_item.get("bytes", b""))
-        hasher.update(b"\0")
-    return hasher.hexdigest()
+    h.update(b"\0".join(str(p).encode() for p in text_parts))
+    for f in payload.get("files", []):
+        h.update(b"\0" + f.get("filename", "").encode() + b"\0" + f.get("bytes", b""))
+    return h.hexdigest()
+
+
+_DEPTH_CONFIG = {
+    'ultra':     {'max_images': 3, 'max_side': 320, 'checklist_target': 5},
+    'fast':      {'max_images': 5, 'max_side': 512, 'checklist_target': 15},
+    'normal':    {'max_images': 10, 'max_side': 768, 'checklist_target': 50},
+    'exhaustive':{'max_images': 10, 'max_side': 768, 'checklist_target': 50},
+}
+
+def _ai_error_message(e, provider="", model_name=""):
+    if google_exceptions and isinstance(e, (
+        google_exceptions.ResourceExhausted, google_exceptions.PermissionDenied,
+        google_exceptions.Unauthenticated, google_exceptions.NotFound,
+        google_exceptions.InvalidArgument, google_exceptions.ServiceUnavailable,
+    )):
+        return parse_gemini_exception(e)
+    if provider == '9router':
+        return format_router_ping_error(e, model_name)
+    return str(e)
 
 
 def _run_generation_pipeline(payload, job_id=None):
@@ -176,34 +180,18 @@ def _run_generation_pipeline(payload, job_id=None):
     provider = detect_provider(req_provider, model_name, user_api_key)
     model_name = normalize_router_model(provider, model_name)
 
-    api_key = user_api_key if (user_api_key and user_api_key.lower() != 'env') else ""
-    if not api_key:
-        if provider == 'gemini':
-            api_key = os.environ.get("GEMINI_API_KEY", "")
-        elif provider == 'openai':
-            api_key = os.environ.get("OPENAI_API_KEY", "")
-        elif provider == 'claude':
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "") or os.environ.get("CLAUDE_API_KEY", "")
-        elif provider == 'mimo':
-            api_key = os.environ.get("MIMO_API_KEY", "") or os.environ.get("XIAOMI_API_KEY", "")
-        elif provider == 'deepseek':
-            api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-        elif provider == 'grok':
-            api_key = os.environ.get("XAI_API_KEY", "") or os.environ.get("GROK_API_KEY", "")
-        elif provider == 'mistral':
-            api_key = os.environ.get("MISTRAL_API_KEY", "")
-        elif provider == '9router':
-            api_key = ""
+    api_key = user_api_key or ""
 
     if not api_key and provider != '9router':
-        raise Exception(f"{provider.upper()} API Key is required. Please set it in your environment variables or paste it in the form.")
+        raise Exception(f"{provider.upper()} API Key is required. Please enter your API key in the form.")
 
     pil_images = []
     try:
         if job_id:
             _set_job_state(job_id, message="Reading and resizing screenshots...", progress=15)
-        max_images = 3 if gen_depth == 'ultra' else (5 if gen_depth == 'fast' else 10)
-        max_side  = 320 if gen_depth == 'ultra' else (512 if gen_depth == 'fast' else 768)
+        _dcfg = _DEPTH_CONFIG.get(gen_depth, _DEPTH_CONFIG['exhaustive'])
+        max_images = _dcfg['max_images']
+        max_side   = _dcfg['max_side']
         files_to_process = uploaded_files[:max_images]
 
         def _load_image(file_item):
@@ -339,11 +327,12 @@ def _run_generation_pipeline(payload, job_id=None):
             case_type = 'Positive'
             repair_stats['case_type_fixed'] += 1
 
-        scenario_label = scenario or f'{module_name} Generated Scenario {index}'
-        scenario = _fill(scenario, f'{module_name} - Generated Scenario {index}')
-        if ' - ' not in scenario:
-            scenario = f'{module_name} - {scenario}'
-            repair_stats['filled_fields'] += 1
+        scenario_label = scenario or f'Generated Scenario {index}'
+        scenario = _fill(scenario, f'Generated Scenario {index}')
+        # Strip page title prefix if AI prepended it (e.g. "vanapp dashboard - Verify...")
+        mod_prefix = module_name.strip().lower()
+        if scenario.lower().startswith(mod_prefix + ' - '):
+            scenario = scenario[len(module_name) + 3:].strip()
         precondition = _fill(precondition, f'The {module_name} page is open and the required UI is available.')
         if not steps:
             steps = (
@@ -416,7 +405,9 @@ def _run_generation_pipeline(payload, job_id=None):
 
     if job_id:
         _set_job_state(job_id, message="Writing Excel workbook...", progress=82)
-    tc_count, ordered_cases = build_excel_file(page_title, id_prefix, test_cases_list, elements_list, checklist_list, xlsx_path, model_name=model_name, gen_depth=gen_depth)
+    wb = openpyxl.Workbook()
+    tc_count, ordered_cases = build_main_testplan(wb, page_title, id_prefix, test_cases_list, model_name, gen_depth)
+    wb.save(xlsx_path)
 
     py_name = None
     if generate_script:
@@ -427,7 +418,7 @@ def _run_generation_pipeline(payload, job_id=None):
         py_path = os.path.join(module_dir, "scripts", py_name)
         build_python_script(page_title, id_prefix, ordered_cases, elements_list, checklist_list, py_path, filename_base, model_name=model_name, gen_depth=gen_depth)
 
-    checklist_target = 5 if gen_depth == "ultra" else (15 if gen_depth == "fast" else 50)
+    checklist_target = _DEPTH_CONFIG.get(gen_depth, _DEPTH_CONFIG['exhaustive'])['checklist_target']
     preview_cases = [
         {
             'tc_id': tc.tc_id,
@@ -457,185 +448,9 @@ def _run_generation_pipeline(payload, job_id=None):
     }
 
 # -----------------------------------------------------------------------------
-# HELPER FUNCTIONS TO BUILD EXCEL FILE
-# -----------------------------------------------------------------------------
-
-def build_excel_file(title, prefix, test_cases, elements, checklist, output_path, model_name="gemini-3.5-flash", gen_depth="exhaustive"):
-    wb = openpyxl.Workbook()
-    
-    # Fonts, fills, borders, alignments
-    header_font  = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
-    header_fill  = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
-    body_font    = Font(name="Calibri", size=11)
-    wrap_align   = Alignment(wrap_text=True, vertical="top", horizontal="left")
-    center_align = Alignment(wrap_text=True, vertical="top", horizontal="center")
-    thin_border  = Border(
-        left=Side(style="thin"), right=Side(style="thin"),
-        top=Side(style="thin"), bottom=Side(style="thin")
-    )
-    
-    def style_header(ws, row, max_col):
-        for col in range(1, max_col + 1):
-            c = ws.cell(row=row, column=col)
-            c.font, c.fill, c.alignment, c.border = header_font, header_fill, center_align, thin_border
-            
-    def style_body(ws, row, max_col):
-        for col in range(1, max_col + 1):
-            c = ws.cell(row=row, column=col)
-            c.font = body_font
-            c.alignment = wrap_align if col != 1 else center_align
-            c.border = thin_border
-
-    def section_row(ws, row, sec_title, max_col):
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=max_col)
-        c = ws.cell(row=row, column=1, value=sec_title)
-        c.font = Font(name="Calibri", bold=True, color="1F3864", size=12)
-        c.fill = PatternFill(start_color="B4C6E7", end_color="B4C6E7", fill_type="solid")
-        c.alignment = Alignment(horizontal="left", vertical="center")
-        c.border = thin_border
-        for col in range(2, max_col + 1):
-            ws.cell(row=row, column=col).border = thin_border
-
-# -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
-    ws1 = wb.active
-    sheet1_title = f"TEST PLAN - {title}"
-    if len(sheet1_title) > 30:
-        sheet1_title = sheet1_title[:27] + "..."
-    ws1.title = sheet1_title
-    
-    headers1 = ["TC-ID", "TEST SCENARIO", "CASE TYPE", "PRE-CONDITION", "STEP SCENARIO", "EXPECTED RESULT", "ACTUAL RESULT", "EVIDENCE"]
-    for c, h in enumerate(headers1, 1):
-        ws1.cell(row=1, column=c, value=h)
-    style_header(ws1, 1, len(headers1))
-    
-    widths1 = [10, 45, 14, 30, 60, 55, 18, 18]
-    for i, w in enumerate(widths1, 1):
-        ws1.column_dimensions[get_column_letter(i)].width = w
-    ws1.freeze_panes = "A2"
-    
-    # Sort test cases by area/component or keep order, and insert section rows
-    # Group by Feature Area for section headers
-    grouped_cases = {}
-    for tc in test_cases:
-        parts = tc.scenario.split(' - ')
-        area = parts[0].strip().strip('[]') if len(parts) > 1 else "General"
-        if area not in grouped_cases:
-            grouped_cases[area] = []
-        grouped_cases[area].append(tc)
-
-# -----------------------------------------------------------------------------
-    ordered_cases = [tc for cases in grouped_cases.values() for tc in cases]
-
-    current_row = 2
-    tc_counter = 1
-    for area, cases in grouped_cases.items():
-        section_row(ws1, current_row, f"SECTION: {area.upper()} TESTS", len(headers1))
-        current_row += 1
-        for tc in cases:
-            ws1.cell(row=current_row, column=1, value=f"{prefix}{tc_counter:03d}")
-            ws1.cell(row=current_row, column=2, value=tc.scenario)
-            ws1.cell(row=current_row, column=3, value=tc.case_type)
-            ws1.cell(row=current_row, column=4, value=tc.precondition)
-            ws1.cell(row=current_row, column=5, value=tc.steps)
-            ws1.cell(row=current_row, column=6, value=tc.expected)
-            ws1.cell(row=current_row, column=7, value="") # Actual result empty
-            ws1.cell(row=current_row, column=8, value="") # Evidence placeholder
-            style_body(ws1, current_row, len(headers1))
-            current_row += 1
-            tc_counter += 1
-
-# -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
-    ws2 = wb.create_sheet("SUMMARY")
-    for c, h in enumerate(["METRIC", "VALUE"], 1):
-        cell = ws2.cell(row=1, column=c, value=h)
-        cell.font, cell.fill, cell.alignment, cell.border = header_font, header_fill, center_align, thin_border
-    ws2.column_dimensions["A"].width = 50
-    ws2.column_dimensions["B"].width = 25
-    ws2.freeze_panes = "A2"
-    
-    _count_positive  = sum(1 for tc in test_cases if tc.case_type == "Positive")
-    _count_negative  = sum(1 for tc in test_cases if tc.case_type == "Negative")
-    _count_boundary  = sum(1 for tc in test_cases if tc.case_type == "Boundary")
-    _count_total     = len(test_cases)
-
-    def _kw_count(*keywords):
-        return sum(
-            1 for tc in test_cases
-            if any(kw.lower() in tc.scenario.lower() for kw in keywords)
-        )
-
-    summary_rows = [
-        ("TOTAL TEST CASES", _count_total),
-        ("", ""),
-        ("  Positive",  _count_positive),
-        ("  Negative",  _count_negative),
-        ("  Boundary",  _count_boundary),
-        ("", ""),
-        ("FORM/UI COMPONENT VALIDATION", ""),
-    ]
-
-    for area, cases in grouped_cases.items():
-        summary_rows.append((f"  {area} Component Tests", len(cases)))
-
-    summary_rows.extend([
-        ("", ""),
-        ("NON-FUNCTIONAL TESTING (ESTIMATED)", ""),
-        ("  Accessibility (WCAG 2.1 AA)",    _kw_count("Accessibility", "WCAG", "Contrast")),
-        ("  Cross-Browser Compatibility",    _kw_count("Browser", "Chrome", "Safari")),
-        ("  Mobile Responsive Layout",       _kw_count("Mobile", "Responsive", "Viewport")),
-        ("  Performance & Latency",          _kw_count("Performance", "Slow 3G", "Timeout")),
-        ("  Security & Sanitization",        _kw_count("Security", "XSS", "Injection")),
-        ("", ""),
-        ("TEST PLAN LANGUAGE", "English"),
-        ("GENERATION ENGINE", f"{model_name} (Himagent AI)")
-    ])
-    
-    for idx, (metric, value) in enumerate(summary_rows, 2):
-        c1 = ws2.cell(row=idx, column=1, value=metric)
-        c2 = ws2.cell(row=idx, column=2, value=value)
-        c1.font = Font(name="Calibri", bold=(not metric.startswith("  ")), size=11) if metric else body_font
-        c2.font = body_font
-        for c in (c1, c2):
-            c.border = thin_border
-            c.alignment = wrap_align
-
-    # Add programmatic Pie Chart to SUMMARY sheet (distributing Case Types)
-    try:
-        from openpyxl.chart import PieChart, Reference
-        chart = PieChart()
-        labels = Reference(ws2, min_col=1, min_row=4, max_row=6)
-        data = Reference(ws2, min_col=2, min_row=4, max_row=6)
-        chart.add_data(data)
-        chart.set_categories(labels)
-        chart.title = "Case Type Distribution"
-        chart.width = 14
-        chart.height = 7
-        ws2.add_chart(chart, "D2")
-    except Exception as e:
-        print(f"Error adding chart to Excel: {e}")
-
-# -----------------------------------------------------------------------------
-    # CONDITIONAL FORMATTING
-# -----------------------------------------------------------------------------
-    green_fill  = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
-    red_fill    = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
-    yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-
-    # Case type formatting on Sheet 1 (Column C)
-    ws1.conditional_formatting.add(f"C2:C{current_row - 1}", CellIsRule(operator='equal', formula=['"Positive"'], fill=green_fill))
-    ws1.conditional_formatting.add(f"C2:C{current_row - 1}", CellIsRule(operator='equal', formula=['"Negative"'], fill=red_fill))
-    ws1.conditional_formatting.add(f"C2:C{current_row - 1}", CellIsRule(operator='equal', formula=['"Boundary"'], fill=yellow_fill))
-
-    wb.save(output_path)
-    return current_row - 2, ordered_cases
-
-# -----------------------------------------------------------------------------
 # HELPER TO GENERATE SELF-CONTAINED PYTHON SCRIPT
 # -----------------------------------------------------------------------------
+
 
 def build_python_script(title, prefix, test_cases, elements, checklist, output_path, filename_base, model_name="gemini-3.5-flash", gen_depth="exhaustive"):
     """Generate a thin Python script that imports from core/ modules to recreate the workbook."""
@@ -655,7 +470,7 @@ def build_python_script(title, prefix, test_cases, elements, checklist, output_p
     for el in elements:
         el_tuples.append((el.area, el.element_name, el.element_type, el.interactions))
 
-    checklist_target = 5 if gen_depth == "ultra" else (15 if gen_depth == "fast" else 50)
+    checklist_target = _DEPTH_CONFIG.get(gen_depth, _DEPTH_CONFIG['exhaustive'])['checklist_target']
     final_checklist = checklist[:checklist_target]
     while len(final_checklist) < checklist_target:
         pad_index = len(final_checklist) + 1
@@ -851,18 +666,11 @@ def ping_api_key():
 
         return jsonify({'success': True})
     except Exception as e:
-        if google_exceptions and isinstance(e, (
-            google_exceptions.ResourceExhausted, google_exceptions.PermissionDenied,
-            google_exceptions.Unauthenticated, google_exceptions.NotFound,
-            google_exceptions.InvalidArgument, google_exceptions.ServiceUnavailable
-        )):
-            return jsonify({'success': False, 'message': parse_gemini_exception(e)})
-        if provider == '9router':
-            return jsonify({'success': False, 'message': format_router_ping_error(e, model_name)})
-        return jsonify({'success': False, 'message': str(e)})
+        return jsonify({'success': False, 'message': _ai_error_message(e, provider, model_name)})
 
 
 @app.route('/api/generate', methods=['POST'])
+@limiter.limit("10 per minute")
 def generate_test_plan():
     try:
         # Check files
@@ -938,8 +746,7 @@ def generate_test_plan():
         job_id = str(uuid4())
         with _GENERATION_LOCK:
             active_job_id = _GENERATION_ACTIVE_BY_CACHE.get(cache_key)
-            active_job = _GENERATION_JOBS.get(active_job_id, {}) if active_job_id else {}
-            if active_job_id and active_job.get('status') in ('queued', 'running'):
+            if active_job_id:
                 return jsonify({
                     'success': True,
                     'queued': True,
@@ -999,15 +806,39 @@ def generate_test_plan():
             
     except Exception as e:
         traceback.print_exc()
-        if google_exceptions and isinstance(e, (
-            google_exceptions.ResourceExhausted, google_exceptions.PermissionDenied,
-            google_exceptions.Unauthenticated, google_exceptions.NotFound,
-            google_exceptions.InvalidArgument, google_exceptions.ServiceUnavailable
-        )):
-            msg = parse_gemini_exception(e)
-        else:
-            msg = str(e)
-        return jsonify({'success': False, 'message': msg}), 500
+        return jsonify({'success': False, 'message': _ai_error_message(e)}), 500
+
+
+@app.route('/api/jobs/<job_id>/stream')
+def stream_job(job_id):
+    def generate():
+        last_payload = None
+        deadline = time.time() + 300  # 5 min hard cap
+        while time.time() < deadline:
+            job = _get_job_state(job_id)
+            if not job:
+                yield f"event: error\ndata: {json.dumps({'message': 'Job not found'})}\n\n"
+                return
+            status = job.get('status')
+            progress = job.get('progress', 0)
+            current = (status, progress, job.get('message', ''))
+            if current != last_payload:
+                data = {'status': status, 'message': job.get('message', ''), 'progress': progress, 'success': True}
+                if status == 'completed' and job.get('result'):
+                    data.update(job['result'])
+                if status == 'failed':
+                    data['error'] = job.get('error', '')
+                yield f"data: {json.dumps(data)}\n\n"
+                last_payload = current
+            if status in ('completed', 'failed'):
+                return
+            time.sleep(0.4)
+        yield f"event: timeout\ndata: {{}}\n\n"
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+    )
 
 
 @app.route('/api/jobs/<job_id>', methods=['GET'])
@@ -1028,6 +859,89 @@ def get_generation_job(job_id):
     if job.get('status') == 'failed':
         response['error'] = job.get('error') or job.get('message') or 'Generation failed.'
     return jsonify(response)
+
+@app.route('/api/batch-generate', methods=['POST'])
+@limiter.limit("5 per minute")
+def batch_generate():
+    """Accept JSON {modules:[{page_title,id_prefix}], common:{...}, files:[{filename,data_b64}]}"""
+    try:
+        import base64
+        body = request.get_json(force=True)
+        modules = body.get('modules', [])
+        if not modules or len(modules) > 20:
+            return jsonify({'success': False, 'message': 'Provide 1–20 modules.'}), 400
+
+        common = body.get('common', {})
+        files_raw = body.get('files', [])
+        files_payload = [
+            {'filename': f['filename'], 'bytes': base64.b64decode(f['data_b64'])}
+            for f in files_raw if f.get('data_b64') and f.get('filename')
+        ]
+        if not files_payload:
+            return jsonify({'success': False, 'message': 'No files provided.'}), 400
+
+        try:
+            validate_screenshot_payload(files_payload)
+        except ValueError as e:
+            return jsonify({'success': False, 'message': str(e)}), 400
+
+        results = []
+        for mod in modules:
+            payload = {**common, **mod, 'files': files_payload}
+            cache_key = _make_generation_cache_key(payload)
+            job_id = str(uuid4())
+
+            with _GENERATION_LOCK:
+                cached = _GENERATION_CACHE.get(cache_key)
+            if not cached:
+                cached = get_generation_cache(_GENERATION_DB_PATH, cache_key)
+            if cached:
+                _set_job_state(job_id, status='completed', message='Completed from cache.',
+                               progress=100, result=cached, cached=True, cache_key=cache_key)
+                results.append({'job_id': job_id, 'status_url': f'/api/jobs/{job_id}',
+                                'stream_url': f'/api/jobs/{job_id}/stream',
+                                'module': mod.get('page_title', ''), 'cached': True})
+                continue
+
+            with _GENERATION_LOCK:
+                if _GENERATION_ACTIVE_BY_CACHE.get(cache_key):
+                    existing = _GENERATION_ACTIVE_BY_CACHE[cache_key]
+                    results.append({'job_id': existing, 'status_url': f'/api/jobs/{existing}',
+                                    'stream_url': f'/api/jobs/{existing}/stream',
+                                    'module': mod.get('page_title', ''), 'deduped': True})
+                    continue
+                _GENERATION_ACTIVE_BY_CACHE[cache_key] = job_id
+
+            _set_job_state(job_id, status='queued', message='Queued', progress=0,
+                           result=None, error=None, cached=False, cache_key=cache_key)
+
+            def _make_worker(p, jid, ck):
+                def _worker():
+                    try:
+                        result = _run_generation_pipeline(p, job_id=jid)
+                        with _GENERATION_LOCK:
+                            _GENERATION_CACHE[ck] = result
+                        set_generation_cache(_GENERATION_DB_PATH, ck, result)
+                        _set_job_state(jid, status='completed', message='Generation complete.',
+                                       progress=100, result=result, error=None)
+                    except Exception as e:
+                        _set_job_state(jid, status='failed', message=str(e), error=str(e), progress=100)
+                    finally:
+                        with _GENERATION_LOCK:
+                            if _GENERATION_ACTIVE_BY_CACHE.get(ck) == jid:
+                                _GENERATION_ACTIVE_BY_CACHE.pop(ck, None)
+                return _worker
+
+            threading.Thread(target=_make_worker(payload, job_id, cache_key), daemon=True).start()
+            results.append({'job_id': job_id, 'status_url': f'/api/jobs/{job_id}',
+                            'stream_url': f'/api/jobs/{job_id}/stream',
+                            'module': mod.get('page_title', '')})
+
+        return jsonify({'success': True, 'jobs': results}), 202
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 
 @app.route('/api/model-health', methods=['GET'])
 def model_health():
@@ -1076,16 +990,12 @@ def model_health():
     except Exception as exc:
         return jsonify({'success': False, 'message': str(exc), 'models': []}), 500
 
-def find_file_in_outputs(filename):
-    """Search outputs/ recursively for a file matching filename. Returns full path or None."""
-    return core_find_file_in_outputs(filename)
-
 @app.route('/api/download/<filename>')
 def download_file(filename):
     filename = safe_filename(filename)
     if filename.endswith('.xlsx'):
         return export_file(filename, 'xlsx')
-    file_path = find_file_in_outputs(filename)
+    file_path = core_find_file_in_outputs(filename)
     if file_path and os.path.exists(file_path):
         return send_file(file_path, as_attachment=True)
     return "File not found", 404
@@ -1096,7 +1006,7 @@ def delete_file(filename):
     """Delete a file from the outputs directory safely."""
     # Sanitize filename to prevent path traversal
     filename = safe_filename(filename)
-    if not find_file_in_outputs(filename):
+    if not core_find_file_in_outputs(filename):
         return jsonify({'success': False, 'message': f'File {filename} not found.'}), 404
     try:
         core_delete_generated_file(filename)
@@ -1120,7 +1030,7 @@ def list_files():
 def get_preview(filename):
     try:
         filename = secure_filename(filename)
-        file_path = find_file_in_outputs(filename)
+        file_path = core_find_file_in_outputs(filename)
         if not file_path or not os.path.exists(file_path):
             return jsonify({'success': False, 'message': f'File {filename} not found.'}), 404
         result = get_file_preview(file_path, filename)
@@ -1137,7 +1047,7 @@ def save_xlsx():
         filename = safe_filename(payload.get('filename', ''))
         changes = payload.get('changes', {}) # dict: {sheet_name: [{'coordinate': 'A1', 'value': 'val'}, ...]}
         
-        file_path = find_file_in_outputs(filename)
+        file_path = core_find_file_in_outputs(filename)
         if not file_path or not os.path.exists(file_path):
             return jsonify({'success': False, 'message': f'File {filename} not found.'}), 404
 
@@ -1164,7 +1074,7 @@ def export_file(filename, export_format):
     try:
         filename = safe_filename(filename)
         export_format = export_format.lower().strip()
-        file_path = find_file_in_outputs(filename)
+        file_path = core_find_file_in_outputs(filename)
         if not file_path or not os.path.exists(file_path) or not filename.endswith('.xlsx'):
             return "File not found or invalid format", 404
         data, mimetype, download_name = export_workbook(file_path, filename, export_format)
@@ -1192,7 +1102,7 @@ def detect_module():
 
         provider = detect_provider(req_provider, model_name, user_api_key)
         model_name = normalize_router_model(provider, model_name)
-        api_key = resolve_api_key(provider, user_api_key)
+        api_key = user_api_key or ""
 
         if not api_key and provider != '9router':
             return jsonify({'success': False, 'message': f'{provider.upper()} API key required.'}), 400
@@ -1213,23 +1123,18 @@ def detect_module():
 
     except Exception as e:
         traceback.print_exc()
-        if google_exceptions and isinstance(e, (
-            google_exceptions.ResourceExhausted, google_exceptions.PermissionDenied,
-            google_exceptions.Unauthenticated, google_exceptions.NotFound,
-            google_exceptions.InvalidArgument, google_exceptions.ServiceUnavailable
-        )):
-            msg = parse_gemini_exception(e)
-        else:
-            msg = str(e)
-        return jsonify({'success': False, 'message': msg}), 500
+        return jsonify({'success': False, 'message': _ai_error_message(e)}), 500
 
 
 # -----------------------------------------------------------------------------
 # DASHBOARD STATISTICS API
 # -----------------------------------------------------------------------------
+_stats_cache = {'data': None, 'ts': 0}
+
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
-    """Return aggregated statistics from the outputs/ folder."""
+    if time.time() - _stats_cache['ts'] < 30 and _stats_cache['data']:
+        return jsonify(_stats_cache['data'])
     try:
         outputs_dir = _outputs_dir()
         os.makedirs(outputs_dir, exist_ok=True)
@@ -1304,7 +1209,7 @@ def get_stats():
         chart_labels = sorted_dates[-14:]
         chart_values = [files_by_date.get(date_key, 0) for date_key in chart_labels]
 
-        return jsonify({
+        result = {
             'success': True,
             'total_plans': total_plans,
             'total_test_cases': total_test_cases,
@@ -1313,7 +1218,10 @@ def get_stats():
             'chart_labels': chart_labels,
             'chart_values': chart_values,
             'recent_files': recent_files[:15],
-        })
+        }
+        _stats_cache['data'] = result
+        _stats_cache['ts'] = time.time()
+        return jsonify(result)
     except Exception as e:
         traceback.print_exc()
         return jsonify({'success': False, 'message': str(e)}), 500

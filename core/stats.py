@@ -3,12 +3,8 @@ import openpyxl
 from core.file_ops import outputs_dir as _core_outputs_dir
 
 
-def get_outputs_dir():
-    return _core_outputs_dir()
-
-
 def build_outputs_file_map():
-    outputs_dir = get_outputs_dir()
+    outputs_dir = _core_outputs_dir()
     file_map = {}
     for root, _, filenames in os.walk(outputs_dir):
         for item in filenames:

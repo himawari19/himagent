@@ -1,12 +1,10 @@
 import os
 import sqlite3
 import json
-import base64
 import threading
 from datetime import datetime
 
 _GENERATION_LOCK = threading.Lock()
-_GENERATION_JOBS = {}
 _GENERATION_CACHE = {}
 _GENERATION_ACTIVE_BY_CACHE = {}
 
@@ -28,7 +26,6 @@ def _init_generation_store():
                 progress INTEGER DEFAULT 0,
                 cache_key TEXT,
                 cached INTEGER DEFAULT 0,
-                payload_json TEXT,
                 result_json TEXT,
                 error TEXT,
                 created_at TEXT,
@@ -46,6 +43,14 @@ def _init_generation_store():
             )
             """
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_cache_key ON generation_jobs(cache_key)"
+        )
+        # Drop legacy payload_json column if it exists (added before this refactor)
+        try:
+            conn.execute("ALTER TABLE generation_jobs DROP COLUMN payload_json")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
 
 
@@ -53,17 +58,16 @@ def _db_row_to_dict(row):
     if not row:
         return None
     return {
-        'job_id': row[0],
-        'status': row[1],
-        'message': row[2],
-        'progress': row[3] or 0,
-        'cache_key': row[4],
-        'cached': bool(row[5]),
-        'payload_json': row[6],
-        'result_json': row[7],
-        'error': row[8],
-        'created_at': row[9],
-        'updated_at': row[10],
+        'job_id':      row[0],
+        'status':      row[1],
+        'message':     row[2],
+        'progress':    row[3] or 0,
+        'cache_key':   row[4],
+        'cached':      bool(row[5]),
+        'result_json': row[6],
+        'error':       row[7],
+        'created_at':  row[8],
+        'updated_at':  row[9],
     }
 
 
@@ -72,7 +76,8 @@ def _db_fetch_job(job_id):
         return None
     with sqlite3.connect(_GENERATION_DB_PATH) as conn:
         row = conn.execute(
-            "SELECT job_id, status, message, progress, cache_key, cached, payload_json, result_json, error, created_at, updated_at FROM generation_jobs WHERE job_id = ?",
+            "SELECT job_id, status, message, progress, cache_key, cached, result_json, error, created_at, updated_at "
+            "FROM generation_jobs WHERE job_id = ?",
             (job_id,),
         ).fetchone()
     return _db_row_to_dict(row)
@@ -80,125 +85,64 @@ def _db_fetch_job(job_id):
 
 def _db_upsert_job(job_id, state):
     now = datetime.utcnow().isoformat()
-    existing = _db_fetch_job(job_id) or {}
-    merged = {**existing, **state}
-    merged.setdefault('created_at', now)
-    merged['updated_at'] = now
     with sqlite3.connect(_GENERATION_DB_PATH) as conn:
-        conn.execute(
-            """
-            INSERT INTO generation_jobs (
-                job_id, status, message, progress, cache_key, cached, payload_json, result_json, error, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(job_id) DO UPDATE SET
-                status=excluded.status,
-                message=excluded.message,
-                progress=excluded.progress,
-                cache_key=excluded.cache_key,
-                cached=excluded.cached,
-                payload_json=excluded.payload_json,
-                result_json=excluded.result_json,
-                error=excluded.error,
-                created_at=excluded.created_at,
-                updated_at=excluded.updated_at
-            """,
-            (
-                job_id,
-                merged.get('status', 'queued'),
-                merged.get('message', ''),
-                int(merged.get('progress', 0) or 0),
-                merged.get('cache_key'),
-                1 if merged.get('cached') else 0,
-                merged.get('payload_json'),
-                merged.get('result_json'),
-                merged.get('error'),
-                merged.get('created_at'),
-                merged['updated_at'],
-            ),
-        )
+        if state.get('status') is None:
+            # Progress/message-only update — never creates a row, avoids NOT NULL on status
+            conn.execute(
+                "UPDATE generation_jobs SET message=?, progress=?, updated_at=? WHERE job_id=?",
+                (state.get('message'), state.get('progress'), now, job_id),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO generation_jobs
+                    (job_id, status, message, progress, cache_key, cached, result_json, error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    status      = COALESCE(excluded.status,      generation_jobs.status),
+                    message     = COALESCE(excluded.message,     generation_jobs.message),
+                    progress    = COALESCE(excluded.progress,    generation_jobs.progress),
+                    cache_key   = COALESCE(excluded.cache_key,   generation_jobs.cache_key),
+                    cached      = COALESCE(excluded.cached,      generation_jobs.cached),
+                    result_json = COALESCE(excluded.result_json, generation_jobs.result_json),
+                    error       = excluded.error,
+                    updated_at  = excluded.updated_at
+                """,
+                (
+                    job_id,
+                    state.get('status'),
+                    state.get('message'),
+                    state.get('progress'),
+                    state.get('cache_key'),
+                    1 if state.get('cached') else 0,
+                    state.get('result_json'),
+                    state.get('error'),
+                    now,
+                    now,
+                ),
+            )
         conn.commit()
-    return merged
-
-
-def _db_get_cache(cache_key):
-    if not os.path.exists(_GENERATION_DB_PATH):
-        return None
-    with sqlite3.connect(_GENERATION_DB_PATH) as conn:
-        row = conn.execute(
-            "SELECT result_json FROM generation_cache WHERE cache_key = ?",
-            (cache_key,),
-        ).fetchone()
-    if not row:
-        return None
-    try:
-        return json.loads(row[0])
-    except Exception:
-        return None
-
-
-def _serialize_payload(payload):
-    serializable = dict(payload)
-    serializable['files'] = [
-        {
-            'filename': item.get('filename', ''),
-            'content_b64': base64.b64encode(item.get('bytes', b'')).decode('ascii'),
-        }
-        for item in payload.get('files', [])
-    ]
-    return json.dumps(serializable, ensure_ascii=False)
-
-
-def _deserialize_payload(payload_json):
-    raw = json.loads(payload_json)
-    raw['files'] = [
-        {
-            'filename': item.get('filename', ''),
-            'bytes': base64.b64decode(item.get('content_b64', '')),
-        }
-        for item in raw.get('files', [])
-    ]
-    return raw
-
-
-def _store_job_state(job_id, state):
-    state_to_store = dict(state)
-    if 'payload' in state_to_store and state_to_store['payload'] is not None:
-        state_to_store['payload_json'] = _serialize_payload(state_to_store.pop('payload'))
-    if 'result' in state_to_store and state_to_store['result'] is not None:
-        state_to_store['result_json'] = json.dumps(state_to_store.pop('result'), ensure_ascii=False)
-    return _db_upsert_job(job_id, state_to_store)
 
 
 def _set_job_state(job_id, **updates):
-    with _GENERATION_LOCK:
-        job = _GENERATION_JOBS.setdefault(job_id, {})
-        job.update(updates)
-        job["updated_at"] = datetime.utcnow().isoformat()
-        persisted = _store_job_state(job_id, job)
-        return persisted
+    state = {k: v for k, v in updates.items() if k != 'payload'}
+    if 'result' in state and state['result'] is not None:
+        state['result_json'] = json.dumps(state.pop('result'), ensure_ascii=False)
+    else:
+        state.pop('result', None)
+    _db_upsert_job(job_id, state)
 
 
 def _get_job_state(job_id):
-    with _GENERATION_LOCK:
-        job = _GENERATION_JOBS.get(job_id)
-    if job:
-        return dict(job)
     persisted = _db_fetch_job(job_id)
     if not persisted:
         return {}
-    try:
-        if persisted.get('payload_json'):
-            persisted['payload'] = _deserialize_payload(persisted['payload_json'])
-    except Exception:
-        pass
     try:
         if persisted.get('result_json'):
             persisted['result'] = json.loads(persisted['result_json'])
     except Exception:
         pass
-    with _GENERATION_LOCK:
-        _GENERATION_JOBS[job_id] = dict(persisted)
-    return dict(persisted)
+    return persisted
 
 
 _init_generation_store()

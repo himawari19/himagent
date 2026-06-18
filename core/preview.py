@@ -13,17 +13,6 @@ def _preview_cache_key(file_path):
     return f"{file_path}|{stat.st_mtime_ns}|{stat.st_size}"
 
 
-def _load_cached(key):
-    with _GENERATION_LOCK:
-        return _PREVIEW_CACHE.get(key)
-
-
-def _store_cached(key, result):
-    with _GENERATION_LOCK:
-        _PREVIEW_CACHE[key] = result
-    return result
-
-
 def _parse_xlsx(file_path):
     wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
     sheets = {}
@@ -72,20 +61,22 @@ def _parse_xlsx(file_path):
 
 
 def get_file_preview(file_path, filename):
-    """Parse a .py or .xlsx file and return a preview dict (cached by mtime)."""
     key = _preview_cache_key(file_path)
-    cached = _load_cached(key)
-    if cached:
-        return cached
+    with _GENERATION_LOCK:
+        if key in _PREVIEW_CACHE:
+            return _PREVIEW_CACHE[key]
 
     if filename.endswith('.py'):
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
-        result = {'success': True, 'type': 'python', 'content': content}
-        return _store_cached(key, result)
-
-    if filename.endswith('.xlsx'):
+            result = {'success': True, 'type': 'python', 'content': f.read()}
+    elif filename.endswith('.xlsx'):
         result = _parse_xlsx(file_path)
-        return _store_cached(key, result)
+    else:
+        return {'success': False, 'message': 'Unsupported file format.'}
 
-    return {'success': False, 'message': 'Unsupported file format.'}
+    with _GENERATION_LOCK:
+        if len(_PREVIEW_CACHE) > 50:
+            for k in list(_PREVIEW_CACHE)[:25]:
+                del _PREVIEW_CACHE[k]
+        _PREVIEW_CACHE[key] = result
+    return result

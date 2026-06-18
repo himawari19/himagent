@@ -17,95 +17,306 @@
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
     />
     <!-- Custom Style Sheet -->
-    <link rel="stylesheet" href="/static/style.css?v=1781700027" />
+    <link rel="stylesheet" href="/static/style.css?v=1782000015" />
   </head>
 
   <body>
-    <div class="stars-bg"></div>
-    <div class="glow-orb orb-1"></div>
-    <div class="glow-orb orb-2"></div>
-
     <div class="app-container">
       <!-- Header Section -->
       <header class="app-header">
         <div class="logo-area">
-          <i class="fa-solid fa-wand-magic-sparkles logo-icon"></i>
+          <i class="fa-solid fa-check-double logo-icon"></i>
           <span class="logo-text"
             >HIM<span class="accent-text">AGENT</span></span
           >
         </div>
-        <div class="header-actions">
-          <div class="badge-status">
-            <span class="status-indicator online"></span>
-            <span>Local engine ready</span>
-          </div>
-        </div>
+        <div class="header-actions" id="themePicker"></div>
       </header>
 
       <main class="main-content">
-        <!-- Hero Title -->
-        <section class="hero-section">
-          <h1 class="hero-title">Automated Test Plan Generator</h1>
-          <p class="hero-subtitle">
-            Upload SUT screenshots, choose a provider, and generate structured
-            Excel test plans with detailed coverage, clear traceability, and an
-            optional recreate script.
-          </p>
-        </section>
+        <div class="page-wrap">
 
-        <!-- Top Status/Info Container (Alternating Cards) -->
-        <div class="top-container">
-          <!-- Instructions Card (Placeholder when idle) -->
-          <div id="infoCard" class="glass-card info-card">
+          <!-- Hero -->
+          <section class="hero-section">
+            <h1 class="hero-title">Automated Test Plan <span class="accent-text">Generator</span></h1>
+            <p class="hero-subtitle">
+              Upload SUT screenshots, choose a provider, and generate structured
+              Excel test plans with detailed coverage, clear traceability, and an
+              optional recreate script.
+            </p>
+          </section>
+
+
+          <!-- Form Configuration -->
+          <form id="generatorForm" class="glass-card main-form">
             <h2 class="card-title">
-              <i class="fa-solid fa-circle-info header-icon text-accent"></i>
-              Guidelines & Standards
+              <i class="fa-solid fa-sliders header-icon"></i> Configuration
             </h2>
-            <ul class="guidelines-list">
-              <li>
-                <i class="fa-solid fa-check"></i>
-                <div>
-                  <strong>Workbook output:</strong>
-                  <p>
-                    Each run produces a TEST PLAN sheet, a SUMMARY sheet, and
-                    consistent workbook styling for fast review.
-                  </p>
-                </div>
-              </li>
-              <li>
-                <i class="fa-solid fa-check"></i>
-                <div>
-                  <strong>Coverage model:</strong>
-                  <p>
-                    Focuses on functional checks, boundaries, security, WCAG,
-                    responsive behavior, performance, and localization edge
-                    cases.
-                  </p>
-                </div>
-              </li>
-              <li>
-                <i class="fa-solid fa-check"></i>
-                <div>
-                  <strong>Result summary:</strong>
-                  <p>
-                    Includes live summary counts, workbook metrics, and a
-                    consistent visual hierarchy for quick scanning.
-                  </p>
-                </div>
-              </li>
-              <li>
-                <i class="fa-solid fa-check"></i>
-                <div>
-                  <strong>Optional recreate script:</strong>
-                  <p>
-                    Save a `.py` recreate script when needed, or keep the flow
-                    focused on the workbook only.
-                  </p>
-                </div>
-              </li>
-            </ul>
-          </div>
 
+            <!-- LEFT COL: config fields + presets -->
+            <div class="form-left-col">
+
+              <div id="modelSelectionContainer" class="form-row">
+                <div class="form-group half-width">
+                  <label for="provider_select">AI Provider</label>
+                  <div class="input-wrapper select-wrapper">
+                    <i class="fa-solid fa-network-wired field-icon"></i>
+                    <select id="provider_select" name="provider">
+                      <option value="gemini" selected>Google Gemini</option>
+                      <option value="openai">OpenAI (GPT)</option>
+                      <option value="claude">Anthropic Claude</option>
+                      <option value="mimo">Xiaomi MiMo</option>
+                      <option value="deepseek">DeepSeek</option>
+                      <option value="grok">xAI Grok</option>
+                      <option value="mistral">Mistral AI</option>
+                      <option value="9router">9Router Local</option>
+                    </select>
+                  </div>
+                  <div class="field-error" id="providerError"></div>
+                </div>
+                <div class="form-group half-width">
+                  <label for="model_name">AI Model Engine <span class="required">*</span>
+                    <span id="modelHealthBadge" class="model-health-badge unknown">Untested</span></label>
+                  <div class="input-wrapper select-wrapper">
+                    <i class="fa-solid fa-brain field-icon"></i>
+                    <select id="model_name" name="model_name" required></select>
+                  </div>
+                  <div class="field-error" id="modelError"></div>
+                </div>
+              </div>
+
+              <div class="form-group" id="apiKeyGroup">
+                <div class="api-key-row">
+                  <label for="api_key" id="api_key_label">Gemini API Key</label>
+                  <span id="apiKeyStatus" class="api-key-status"></span>
+                </div>
+                <div class="input-wrapper">
+                  <i class="fa-solid fa-key field-icon"></i>
+                  <input type="password" id="api_key" name="api_key"
+                    autocomplete="new-password" data-lpignore="true" data-1p-ignore="true"
+                    placeholder="Paste your API key here" />
+                </div>
+              </div>
+
+              <div id="routerInfo" class="provider-help hidden">
+                <div id="routerConnectedRow" class="router-help-row">
+                  <span class="router-help-copy">Configure provider keys and routes in the 9Router dashboard:
+                    <a href="http://localhost:20128" target="_blank" rel="noopener">http://localhost:20128</a></span>
+                  <span class="router-actions">
+                    <span id="routerStatus" class="api-key-status"></span>
+                    <button type="button" id="routerTestBtn" class="btn-router-test">Test</button>
+                  </span>
+                </div>
+                <div id="routerNotFound" class="router-not-found hidden">
+                  <div class="router-not-found-icon"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                  <div class="router-not-found-body">
+                    <strong>9Router not detected on this machine</strong>
+                    <p>9Router is a local AI router app that must be running on port 20128. It is not installed by default — you need to download and run it first.</p>
+                    <div class="router-not-found-actions">
+                      <a href="https://github.com/9router/9router/releases" target="_blank" rel="noopener" class="btn-router-install">
+                        <i class="fa-solid fa-download"></i> Download 9Router
+                      </a>
+                      <button type="button" id="routerRetryBtn" class="btn-router-retry">
+                        <i class="fa-solid fa-rotate-right"></i> Retry connection
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group half-width">
+                  <label for="page_title">Page / Module Title <span class="required">*</span></label>
+                  <div class="input-wrapper">
+                    <i class="fa-solid fa-file-signature field-icon"></i>
+                    <input type="text" id="page_title" name="page_title"
+                      placeholder="e.g. Login Page, Create Project Modal" required />
+                  </div>
+                  <div class="field-error" id="pageTitleError"></div>
+                </div>
+                <div class="form-group half-width">
+                  <label for="id_prefix">TC-ID Prefix <span class="required">*</span></label>
+                  <div class="input-wrapper">
+                    <i class="fa-solid fa-hashtag field-icon"></i>
+                    <input type="text" id="id_prefix" name="id_prefix"
+                      placeholder="e.g. TC-L-, TC-CP-, etc." required />
+                  </div>
+                  <div class="field-error" id="idPrefixError"></div>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="gen_depth">Generation Depth</label>
+                <div class="input-wrapper select-wrapper">
+                  <i class="fa-solid fa-sliders field-icon"></i>
+                  <select id="gen_depth" name="gen_depth">
+                    <option value="ultra" selected>⚡ Ultra Fast (5-8 test cases - quickest response)</option>
+                    <option value="fast">🚀 Fast (10-15 test cases - fast response)</option>
+                    <option value="normal">📋 Normal (30-50 test cases - balanced coverage)</option>
+                    <option value="exhaustive">🔬 Exhaustive (50-80 test cases - full coverage)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="checkbox-label" for="generate_script">
+                  <input type="checkbox" id="generate_script" name="generate_script" />
+                  Generate Recreate Script
+                </label>
+              </div>
+
+              <div class="form-group" id="instructionsGroup">
+                <div class="instructions-header">
+                  <label for="instructions" class="instructions-label">Custom Instructions / Context (Preset-Driven)</label>
+                  <div class="instructions-header-actions">
+                    <span id="instructionsCounter" class="instructions-counter hidden">0 chars</span>
+                    <button type="button" id="savePresetBtn" class="btn-save-preset hidden" title="Save as custom preset">
+                      <i class="fa-solid fa-bookmark"></i> Save
+                    </button>
+                    <button type="button" id="clearInstructionsBtn" class="btn-clear-instructions hidden" title="Clear all instructions">
+                      <i class="fa-solid fa-eraser"></i> Clear
+                    </button>
+                  </div>
+                </div>
+                <div class="input-wrapper textarea-wrapper">
+                  <i class="fa-solid fa-file-lines textarea-icon"></i>
+                  <textarea id="instructions" name="instructions" rows="4"
+                    placeholder="Type custom instructions, or click presets below to build context..."></textarea>
+                </div>
+
+                <div class="preset-container preset-collapsible" data-category="coverage">
+                  <button type="button" class="preset-category-toggle">
+                    <i class="fa-solid fa-crosshairs preset-cat-icon" style="color:#7c3aed"></i>
+                    <span>Coverage Focus</span>
+                    <i class="fa-solid fa-chevron-down preset-chevron"></i>
+                  </button>
+                  <div class="preset-chips-row preset-chips-collapsed">
+                    <button type="button" class="preset-chip" data-text="Focus on functional flows, happy paths, button clicks, links navigation, form submissions, and expected success states.">Functional</button>
+                    <button type="button" class="preset-chip" data-text="Focus on visual alignment, spacing, typography, colors, dark mode transitions, hover effects, and UI aesthetics.">UI/UX</button>
+                    <button type="button" class="preset-chip" data-text="Focus on boundary values, input constraints, maximum lengths, email/phone format validation, special characters, and required fields.">Input &amp; Validation</button>
+                    <button type="button" class="preset-chip" data-text="Focus on security: XSS prevention, SQL injection, CSRF tokens, script embedding, session handling, and input sanitization.">Security</button>
+                    <button type="button" class="preset-chip" data-text="Focus on WCAG 2.1 AA: keyboard tab order, visible focus rings, aria-labels, screen reader compatibility, and color contrast 4.5:1.">Accessibility</button>
+                    <button type="button" class="preset-chip" data-text="Focus on responsive layouts across iPhone SE 375px, Galaxy S20 412px, iPad 768px, touch gestures, and portrait/landscape orientation.">Mobile</button>
+                    <button type="button" class="preset-chip" data-text="Focus on Slow 3G latency, server timeout handling, rate limiting after rapid submissions, and time-to-interactive thresholds.">Performance</button>
+                    <button type="button" class="preset-chip" data-text="Focus on Unicode characters, CJK/Arabic input, RTL layout override, date/currency locale formatting, and zero-width characters.">i18n &amp; Unicode</button>
+                    <button type="button" class="preset-chip" data-text="Focus on typography and text sections: heading hierarchy (H1-H4 size and weight distinction), body text line-height and readability, label and placeholder text visibility, text truncation with ellipsis on overflow, long text wrapping, and empty string rendering.">Typography &amp; Text</button>
+                    <button type="button" class="preset-chip" data-text="Focus on spacing and layout consistency: padding and margin between sections, element alignment on grid, no overlapping components, section divider visibility, card and panel internal spacing, and whitespace balance across breakpoints.">Spacing &amp; Layout</button>
+                    <button type="button" class="preset-chip" data-text="Focus on interactive states for every UI element: default, hover, focus, active, disabled, and loading states. Verify visual feedback is distinct and consistent across buttons, inputs, links, and dropdowns.">Interactive States</button>
+                    <button type="button" class="preset-chip" data-text="Focus on empty and error states: empty list or table with 0-results illustration and helper message, form field inline error messages with icon, page-level error banners, skeleton loader appearance, and no-data placeholder copy.">Empty &amp; Error States</button>
+                    <button type="button" class="preset-chip" data-text="Focus on dark mode: all text readable on dark background, no hardcoded white or black color leaking through, icon visibility, border contrast, input background in dark, and modal and overlay appearance in dark theme.">Dark Mode</button>
+                    <button type="button" class="preset-chip" data-text="Focus on micro-interactions and animation: button press feedback, page transition smoothness, toast notification slide-in and auto-dismiss timing, loading spinner visibility, and collapse and expand animation fluidity.">Micro-interactions</button>
+                    <button type="button" class="preset-chip" data-text="Focus on color usage and contrast: brand color consistency, text-on-background contrast ratio at least 4.5:1 (WCAG AA), disabled element color clearly distinct from active, error state color (red) visually separate from warning (amber), and no reliance on color alone to convey meaning.">Color &amp; Contrast</button>
+                  </div>
+                </div>
+
+                <div class="preset-container preset-collapsible" data-category="sut">
+                  <button type="button" class="preset-category-toggle">
+                    <i class="fa-solid fa-layer-group preset-cat-icon" style="color:#10b981"></i>
+                    <span>SUT Type</span>
+                    <i class="fa-solid fa-chevron-down preset-chevron"></i>
+                  </button>
+                  <div class="preset-chips-row preset-chips-collapsed">
+                    <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Login / Authentication page. Include test cases for valid login, invalid credentials, locked account, forgot password, session persistence, and brute-force protection.">Login / Auth</button>
+                    <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Dashboard / Analytics page. Include test cases for data widget rendering, filter interactions, date range selection, chart loading states, and empty state handling.">Dashboard</button>
+                    <button type="button" class="preset-chip preset-chip--sut" data-text="This is an E-commerce page. Include test cases for add-to-cart, quantity update, price calculation, coupon/promo code, checkout flow, and payment method selection.">E-commerce</button>
+                    <button type="button" class="preset-chip preset-chip--sut" data-text="This is a multi-step Form / Wizard. Include test cases for step navigation, field validation per step, back/forward state retention, and final submission.">Form / Wizard</button>
+                    <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Search and Filter page. Include test cases for keyword search, filter combinations, no-results state, pagination, and sort order behavior.">Search &amp; Filter</button>
+                    <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Settings / Profile page. Include test cases for field editing, save/discard changes, password change, avatar upload, and permission-based field visibility.">Settings</button>
+                    <button type="button" class="preset-chip preset-chip--sut" data-text="This page has a File Upload feature. Include test cases for valid upload, invalid file type, max size exceeded, zero-byte file, corrupted file, double extension (.jpg.exe), and EXIF stripping.">File Upload</button>
+                    <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Data Table / List View. Include test cases for column sorting, row selection, bulk action, pagination, search/filter within table, and empty state.">Data Table</button>
+                  </div>
+                </div>
+
+                <div class="preset-container preset-collapsible" data-category="focus">
+                  <button type="button" class="preset-category-toggle">
+                    <i class="fa-solid fa-bullseye preset-cat-icon" style="color:#f59e0b"></i>
+                    <span>Focus Mode</span>
+                    <i class="fa-solid fa-chevron-down preset-chevron"></i>
+                  </button>
+                  <div class="preset-chips-row preset-chips-collapsed">
+                    <button type="button" class="preset-chip preset-chip--focus" data-text="Focus ONLY on negative test cases: invalid inputs, error states, rejected submissions, security attacks, and failure handling. Skip positive/happy-path cases.">Negative Only</button>
+                    <button type="button" class="preset-chip preset-chip--focus" data-text="Focus ONLY on happy path / positive test cases: successful flows, valid inputs, and expected success states. Skip edge cases and error handling.">Happy Path Only</button>
+                    <button type="button" class="preset-chip preset-chip--focus" data-text="Generate a compact smoke test: 5 critical test cases that verify the most important functionality is working. Prioritize core flow over edge cases.">Smoke Test</button>
+                    <button type="button" class="preset-chip preset-chip--focus" data-text="Deep-dive into edge cases and boundary conditions: empty states, maximum/minimum values, concurrent actions, race conditions, and unexpected user behavior.">Edge Cases</button>
+                  </div>
+                </div>
+
+                <div class="preset-container preset-collapsible" id="customPresetsContainer" data-category="my" style="display:none">
+                  <button type="button" class="preset-category-toggle">
+                    <i class="fa-solid fa-bookmark preset-cat-icon" style="color:#6366f1"></i>
+                    <span>My Presets</span>
+                    <button type="button" id="manageCustomPresetsBtn" class="btn-manage-presets">Manage</button>
+                    <i class="fa-solid fa-chevron-down preset-chevron"></i>
+                  </button>
+                  <div class="preset-chips-row preset-chips-collapsed" id="customPresetsRow"></div>
+                </div>
+              </div>
+
+            </div><!-- /form-left-col -->
+
+            <!-- RIGHT COL: upload + submit -->
+            <div class="form-right-col">
+              <div class="form-group">
+                <label>SUT Screenshots Upload (Max 10) <span class="required">*</span></label>
+                <div id="dropZone" class="drop-zone" role="button" tabindex="0"
+                  aria-label="Upload SUT screenshots. Press Enter or Space to browse files.">
+                  <input type="file" id="screenshot" name="screenshot"
+                    accept="image/*" multiple class="file-input-hidden" />
+                  <div class="drop-zone-content">
+                    <i class="fa-solid fa-cloud-arrow-up upload-icon"></i>
+                    <h3>Drag &amp; drop screenshot(s) here</h3>
+                    <p>or click to browse &bull; <strong>Ctrl+V</strong> to paste from clipboard</p>
+                    <span class="file-limits">Supports JPEG, PNG, WEBP (Max 5MB per file &bull; Max 10 screens)</span>
+                  </div>
+                  <div id="previewContainer" class="preview-container hidden">
+                    <div class="preview-header">
+                      <span id="previewCounter" class="preview-counter"></span>
+                      <span class="preview-footer-hint">
+                        <i class="fa-solid fa-circle-info"></i>
+                        Click to zoom &bull; Ctrl+V to paste
+                      </span>
+                      <button type="button" id="removeImgBtn" class="btn-remove-img">
+                        <i class="fa-solid fa-trash-can"></i> Clear All
+                      </button>
+                    </div>
+                    <div class="preview-grid-wrapper">
+                      <div id="previewGrid" class="preview-grid"></div>
+                    </div>
+                  </div>
+                </div>
+                <button type="button" id="detectBtn" class="detect-btn hidden">
+                  <i class="fa-solid fa-wand-magic-sparkles"></i>
+                  <span id="detectBtnText">Auto-Detect Module Type</span>
+                </button>
+                <div id="suggestionBar" class="suggestion-bar hidden"></div>
+              </div>
+
+              <!-- Batch Mode -->
+              <div class="batch-section" id="batchSection">
+                <button type="button" class="batch-toggle" id="batchToggle">
+                  <i class="fa-solid fa-layer-group"></i>
+                  <span id="batchToggleLabel">Batch Mode</span>
+                  <i class="fa-solid fa-chevron-down batch-chevron" id="batchChevron"></i>
+                </button>
+                <div class="batch-body hidden" id="batchBody">
+                  <p class="batch-hint">Add extra modules — same screenshots &amp; settings, different names &amp; prefixes.</p>
+                  <div id="batchModuleList"></div>
+                  <button type="button" class="btn-add-module" id="addBatchModuleBtn">
+                    <i class="fa-solid fa-plus"></i> Add Module
+                  </button>
+                </div>
+              </div>
+
+              <button type="submit" id="submitBtn" class="btn-primary">
+                <span class="btn-text" id="submitBtnText">Generate Test Plan</span>
+                <i class="fa-solid fa-arrow-right btn-icon"></i>
+              </button>
+              <div class="field-error form-submit-error" id="screenshotError"></div>
+            </div><!-- /form-right-col -->
+
+          </form>
+
+          <!-- Progress Card (Visible during generation) -->
           <!-- Progress Card (Visible during generation) -->
           <div id="progressCard" class="glass-card progress-card hidden">
             <h2 class="card-title">
@@ -137,6 +348,7 @@
             </div>
           </div>
 
+          <!-- Result Dashboard Card (Visible on success) -->
           <!-- Result Dashboard Card (Visible on success) -->
           <div id="resultCard" class="glass-card result-card hidden">
             <div class="success-header">
@@ -272,367 +484,55 @@
                 <span>Generate Another</span>
               </button>
             </div>
+            </div><!-- /resultCard -->
+
+          <!-- Batch Results -->
+          <div id="batchResultCard" class="glass-card batch-result-card hidden">
+            <h2 class="card-title">
+              <i class="fa-solid fa-layer-group header-icon text-accent"></i>
+              Batch Generation
+            </h2>
+            <div id="batchJobList" class="batch-job-list"></div>
           </div>
-        </div>
 
-        <!-- Form Configuration Section (Full Width) -->
-        <form id="generatorForm" class="glass-card main-form">
-          <h2 class="card-title">
-            <i class="fa-solid fa-sliders header-icon"></i> Configuration
-          </h2>
-
-          <div class="form-left-col">
-            <!-- AI Provider and Model Selection (Visible by Default) -->
-            <div id="modelSelectionContainer" class="form-row">
-              <div class="form-group half-width">
-                <label for="provider_select">AI Provider</label>
-                <div class="input-wrapper select-wrapper">
-                  <i class="fa-solid fa-network-wired field-icon"></i>
-                  <select id="provider_select" name="provider">
-                    <option value="gemini" selected>Google Gemini</option>
-                    <option value="openai">OpenAI (GPT)</option>
-                    <option value="claude">Anthropic Claude</option>
-                    <option value="mimo">Xiaomi MiMo</option>
-                    <option value="deepseek">DeepSeek</option>
-                    <option value="grok">xAI Grok</option>
-                    <option value="mistral">Mistral AI</option>
-                    <option value="9router">9Router Local</option>
-                  </select>
-                </div>
-                <div class="field-error" id="providerError"></div>
+          <!-- Recent Generations -->
+            <div class="recent-card">
+              <h2 class="card-title">
+                <i class="fa-solid fa-clock-rotate-left header-icon text-accent"></i>
+                <span>Recent Generations</span>
+              </h2>
+              <div id="recentList" class="recent-list">
+                <div class="recent-empty">No recent output yet.</div>
               </div>
+            </div>
 
-              <div class="form-group half-width">
-                <label for="model_name"
-                  >AI Model Engine <span class="required">*</span>
-                  <span id="modelHealthBadge" class="model-health-badge unknown">Untested</span></label
+            <!-- Generated Files Library -->
+            <div class="library-card">
+              <h2 class="card-title">
+                <i class="fa-solid fa-folder-open header-icon text-accent"></i>
+                <span>Generated Plans</span>
+                <button
+                  id="refreshLibraryBtn"
+                  class="btn-refresh"
+                  type="button"
+                  title="Refresh list"
                 >
-                <div class="input-wrapper select-wrapper">
-                  <i class="fa-solid fa-brain field-icon"></i>
-                  <select id="model_name" name="model_name" required>
-                    <!-- Populated dynamically based on provider -->
-                  </select>
-                </div>
-                <div class="field-error" id="modelError"></div>
-              </div>
-            </div>
-
-            <!-- API Key / Token input -->
-            <div class="form-group" id="apiKeyGroup">
-              <div class="api-key-row">
-                <label for="api_key" id="api_key_label">Gemini API Key</label>
-                <span id="apiKeyStatus" class="api-key-status"></span>
-              </div>
-              <div class="input-wrapper">
-                <i class="fa-solid fa-key field-icon"></i>
-                <input
-                  type="password"
-                  id="api_key"
-                  name="api_key"
-                  autocomplete="new-password"
-                  data-lpignore="true"
-                  data-1p-ignore="true"
-                  placeholder="Paste your Gemini API key (falls back to server env variables if blank)"
-                />
-              </div>
-            </div>
-
-            <div id="routerInfo" class="provider-help hidden">
-              <!-- Normal connected state -->
-              <div id="routerConnectedRow" class="router-help-row">
-                <span class="router-help-copy">Configure provider keys and routes in the 9Router dashboard: <a href="http://localhost:20128" target="_blank" rel="noopener">http://localhost:20128</a></span>
-                <span class="router-actions">
-                  <span id="routerStatus" class="api-key-status"></span>
-                  <button type="button" id="routerTestBtn" class="btn-router-test">Test</button>
-                </span>
-              </div>
-              <!-- Not found state -->
-              <div id="routerNotFound" class="router-not-found hidden">
-                <div class="router-not-found-icon"><i class="fa-solid fa-triangle-exclamation"></i></div>
-                <div class="router-not-found-body">
-                  <strong>9Router not detected on this machine</strong>
-                  <p>9Router is a local AI router app that must be running on port 20128. It is not installed by default — you need to download and run it first.</p>
-                  <div class="router-not-found-actions">
-                    <a href="https://github.com/9router/9router/releases" target="_blank" rel="noopener" class="btn-router-install">
-                      <i class="fa-solid fa-download"></i> Download 9Router
-                    </a>
-                    <button type="button" id="routerRetryBtn" class="btn-router-retry">
-                      <i class="fa-solid fa-rotate-right"></i> Retry connection
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Page / Module Details -->
-            <div class="form-row">
-              <div class="form-group half-width">
-                <label for="page_title"
-                  >Page / Module Title <span class="required">*</span></label
-                >
-                <div class="input-wrapper">
-                  <i class="fa-solid fa-file-signature field-icon"></i>
-                  <input
-                    type="text"
-                    id="page_title"
-                    name="page_title"
-                    placeholder="e.g. Login Page, Create Project Modal"
-                    required
-                  />
-                </div>
-                <div class="field-error" id="pageTitleError"></div>
-              </div>
-
-              <div class="form-group half-width">
-                <label for="id_prefix"
-                  >TC-ID Prefix <span class="required">*</span></label
-                >
-                <div class="input-wrapper">
-                  <i class="fa-solid fa-hashtag field-icon"></i>
-                  <input
-                    type="text"
-                    id="id_prefix"
-                    name="id_prefix"
-                    placeholder="e.g. TC-L-, TC-CP-, etc."
-                    required
-                  />
-                </div>
-                <div class="field-error" id="idPrefixError"></div>
-              </div>
-            </div>
-
-            <!-- Generation Depth Option -->
-            <div class="form-row">
-              <div class="form-group half-width">
-                <label for="gen_depth">Generation Depth</label>
-                <div class="input-wrapper select-wrapper">
-                  <i class="fa-solid fa-sliders field-icon"></i>
-                  <select id="gen_depth" name="gen_depth">
-                    <option value="ultra" selected>
-                      ⚡ Ultra Fast (5-8 test cases - quickest response)
-                    </option>
-                    <option value="fast">
-                      🚀 Fast (10-15 test cases - fast response)
-                    </option>
-                    <option value="normal">
-                      📋 Normal (30-50 test cases - balanced coverage)
-                    </option>
-                    <option value="exhaustive">
-                      🔬 Exhaustive (50-80 test cases - full coverage)
-                    </option>
-                  </select>
-                </div>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group half-width">
-                <label class="checkbox-label" for="generate_script">
-                  <input
-                    type="checkbox"
-                    id="generate_script"
-                    name="generate_script"
-                  />
-                  Generate Recreate Script
-                </label>
-              </div>
-            </div>
-            <div class="form-group" id="instructionsGroup">
-              <div class="instructions-header">
-                <label for="instructions" class="instructions-label">Custom Instructions / Context (Preset-Driven)</label>
-                <div class="instructions-header-actions">
-                  <span id="instructionsCounter" class="instructions-counter hidden">0 chars</span>
-                  <button type="button" id="savePresetBtn" class="btn-save-preset hidden" title="Save as custom preset">
-                    <i class="fa-solid fa-bookmark"></i> Save
-                  </button>
-                  <button type="button" id="clearInstructionsBtn" class="btn-clear-instructions hidden" title="Clear all instructions">
-                    <i class="fa-solid fa-eraser"></i> Clear
-                  </button>
-                </div>
-              </div>
-              <div class="input-wrapper textarea-wrapper">
-                <i class="fa-solid fa-file-lines textarea-icon"></i>
-                <textarea id="instructions" name="instructions" rows="4"
-                  placeholder="Type custom instructions, or click presets below to build context..."></textarea>
-              </div>
-
-              <!-- Coverage Focus -->
-              <div class="preset-container preset-collapsible" data-category="coverage">
-                <button type="button" class="preset-category-toggle">
-                  <i class="fa-solid fa-crosshairs preset-cat-icon" style="color:#7c3aed"></i>
-                  <span>Coverage Focus</span>
-                  <i class="fa-solid fa-chevron-down preset-chevron"></i>
+                  <i class="fa-solid fa-arrows-rotate"></i>
                 </button>
-                <div class="preset-chips-row preset-chips-collapsed">
-                  <button type="button" class="preset-chip" data-text="Focus on functional flows, happy paths, button clicks, links navigation, form submissions, and expected success states.">Functional</button>
-                  <button type="button" class="preset-chip" data-text="Focus on visual alignment, spacing, typography, colors, dark mode transitions, hover effects, and UI aesthetics.">UI/UX</button>
-                  <button type="button" class="preset-chip" data-text="Focus on boundary values, input constraints, maximum lengths, email/phone format validation, special characters, and required fields.">Input &amp; Validation</button>
-                  <button type="button" class="preset-chip" data-text="Focus on security: XSS prevention, SQL injection, CSRF tokens, script embedding, session handling, and input sanitization.">Security</button>
-                  <button type="button" class="preset-chip" data-text="Focus on WCAG 2.1 AA: keyboard tab order, visible focus rings, aria-labels, screen reader compatibility, and color contrast 4.5:1.">Accessibility</button>
-                  <button type="button" class="preset-chip" data-text="Focus on responsive layouts across iPhone SE 375px, Galaxy S20 412px, iPad 768px, touch gestures, and portrait/landscape orientation.">Mobile</button>
-                  <button type="button" class="preset-chip" data-text="Focus on Slow 3G latency, server timeout handling, rate limiting after rapid submissions, and time-to-interactive thresholds.">Performance</button>
-                  <button type="button" class="preset-chip" data-text="Focus on Unicode characters, CJK/Arabic input, RTL layout override, date/currency locale formatting, and zero-width characters.">i18n &amp; Unicode</button>
-                  <button type="button" class="preset-chip" data-text="Focus on typography and text sections: heading hierarchy (H1-H4 size and weight distinction), body text line-height and readability, label and placeholder text visibility, text truncation with ellipsis on overflow, long text wrapping, and empty string rendering.">Typography &amp; Text</button>
-                  <button type="button" class="preset-chip" data-text="Focus on spacing and layout consistency: padding and margin between sections, element alignment on grid, no overlapping components, section divider visibility, card and panel internal spacing, and whitespace balance across breakpoints.">Spacing &amp; Layout</button>
-                  <button type="button" class="preset-chip" data-text="Focus on interactive states for every UI element: default, hover, focus, active, disabled, and loading states. Verify visual feedback is distinct and consistent across buttons, inputs, links, and dropdowns.">Interactive States</button>
-                  <button type="button" class="preset-chip" data-text="Focus on empty and error states: empty list or table with 0-results illustration and helper message, form field inline error messages with icon, page-level error banners, skeleton loader appearance, and no-data placeholder copy.">Empty &amp; Error States</button>
-                  <button type="button" class="preset-chip" data-text="Focus on dark mode: all text readable on dark background, no hardcoded white or black color leaking through, icon visibility, border contrast, input background in dark, and modal and overlay appearance in dark theme.">Dark Mode</button>
-                  <button type="button" class="preset-chip" data-text="Focus on micro-interactions and animation: button press feedback, page transition smoothness, toast notification slide-in and auto-dismiss timing, loading spinner visibility, and collapse and expand animation fluidity.">Micro-interactions</button>
-                  <button type="button" class="preset-chip" data-text="Focus on color usage and contrast: brand color consistency, text-on-background contrast ratio at least 4.5:1 (WCAG AA), disabled element color clearly distinct from active, error state color (red) visually separate from warning (amber), and no reliance on color alone to convey meaning.">Color &amp; Contrast</button>
-                </div>
-              </div>
-
-              <!-- SUT Type -->
-              <div class="preset-container preset-collapsible" data-category="sut">
-                <button type="button" class="preset-category-toggle">
-                  <i class="fa-solid fa-layer-group preset-cat-icon" style="color:#10b981"></i>
-                  <span>SUT Type</span>
-                  <i class="fa-solid fa-chevron-down preset-chevron"></i>
-                </button>
-                <div class="preset-chips-row preset-chips-collapsed">
-                  <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Login / Authentication page. Include test cases for valid login, invalid credentials, locked account, forgot password, session persistence, and brute-force protection.">Login / Auth</button>
-                  <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Dashboard / Analytics page. Include test cases for data widget rendering, filter interactions, date range selection, chart loading states, and empty state handling.">Dashboard</button>
-                  <button type="button" class="preset-chip preset-chip--sut" data-text="This is an E-commerce page. Include test cases for add-to-cart, quantity update, price calculation, coupon/promo code, checkout flow, and payment method selection.">E-commerce</button>
-                  <button type="button" class="preset-chip preset-chip--sut" data-text="This is a multi-step Form / Wizard. Include test cases for step navigation, field validation per step, back/forward state retention, and final submission.">Form / Wizard</button>
-                  <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Search and Filter page. Include test cases for keyword search, filter combinations, no-results state, pagination, and sort order behavior.">Search &amp; Filter</button>
-                  <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Settings / Profile page. Include test cases for field editing, save/discard changes, password change, avatar upload, and permission-based field visibility.">Settings</button>
-                  <button type="button" class="preset-chip preset-chip--sut" data-text="This page has a File Upload feature. Include test cases for valid upload, invalid file type, max size exceeded, zero-byte file, corrupted file, double extension (.jpg.exe), and EXIF stripping.">File Upload</button>
-                  <button type="button" class="preset-chip preset-chip--sut" data-text="This is a Data Table / List View. Include test cases for column sorting, row selection, bulk action, pagination, search/filter within table, and empty state.">Data Table</button>
-                </div>
-              </div>
-
-              <!-- Focus Mode -->
-              <div class="preset-container preset-collapsible" data-category="focus">
-                <button type="button" class="preset-category-toggle">
-                  <i class="fa-solid fa-bullseye preset-cat-icon" style="color:#f59e0b"></i>
-                  <span>Focus Mode</span>
-                  <i class="fa-solid fa-chevron-down preset-chevron"></i>
-                </button>
-                <div class="preset-chips-row preset-chips-collapsed">
-                  <button type="button" class="preset-chip preset-chip--focus" data-text="Focus ONLY on negative test cases: invalid inputs, error states, rejected submissions, security attacks, and failure handling. Skip positive/happy-path cases.">Negative Only</button>
-                  <button type="button" class="preset-chip preset-chip--focus" data-text="Focus ONLY on happy path / positive test cases: successful flows, valid inputs, and expected success states. Skip edge cases and error handling.">Happy Path Only</button>
-                  <button type="button" class="preset-chip preset-chip--focus" data-text="Generate a compact smoke test: 5 critical test cases that verify the most important functionality is working. Prioritize core flow over edge cases.">Smoke Test</button>
-                  <button type="button" class="preset-chip preset-chip--focus" data-text="Deep-dive into edge cases and boundary conditions: empty states, maximum/minimum values, concurrent actions, race conditions, and unexpected user behavior.">Edge Cases</button>
-                </div>
-              </div>
-
-              <!-- Custom saved presets -->
-              <div class="preset-container preset-collapsible" id="customPresetsContainer" data-category="my" style="display:none">
-                <button type="button" class="preset-category-toggle">
-                  <i class="fa-solid fa-bookmark preset-cat-icon" style="color:#6366f1"></i>
-                  <span>My Presets</span>
-                  <button type="button" id="manageCustomPresetsBtn" class="btn-manage-presets">Manage</button>
-                  <i class="fa-solid fa-chevron-down preset-chevron"></i>
-                </button>
-                <div class="preset-chips-row preset-chips-collapsed" id="customPresetsRow"></div>
-              </div>
-            </div>
-          </div>
-          <div class="form-right-col">
-            <!-- Drag & Drop Upload Zone -->
-            <div class="form-group">
-              <label
-                >SUT Screenshots Upload (Max 10)
-                <span class="required">*</span></label
-              >
-              <div
-                id="dropZone"
-                class="drop-zone"
-                role="button"
-                tabindex="0"
-                aria-label="Upload SUT screenshots. Press Enter or Space to browse files."
-              >
-                <input
-                  type="file"
-                  id="screenshot"
-                  name="screenshot"
-                  accept="image/*"
-                  multiple
-                  class="file-input-hidden"
-                />
-                <div class="drop-zone-content">
-                  <i class="fa-solid fa-cloud-arrow-up upload-icon"></i>
-                  <h3>Drag &amp; drop screenshot(s) here</h3>
-                  <p>
-                    or click to browse &bull; <strong>Ctrl+V</strong> to paste
-                    from clipboard
-                  </p>
-                  <span class="file-limits"
-                    >Supports JPEG, PNG, WEBP (Max 5MB per file &bull; Max 10
-                    screens)</span
-                  >
-                </div>
-                <div id="previewContainer" class="preview-container hidden">
-                  <div class="preview-header">
-                    <span id="previewCounter" class="preview-counter"></span>
-                    <span class="preview-footer-hint">
-                      <i class="fa-solid fa-circle-info"></i>
-                      Click to zoom &bull; Ctrl+V to paste
-                    </span>
-                    <button type="button" id="removeImgBtn" class="btn-remove-img">
-                      <i class="fa-solid fa-trash-can"></i> Clear All
-                    </button>
-                  </div>
-                  <div class="preview-grid-wrapper">
-                    <div id="previewGrid" class="preview-grid"></div>
-                  </div>
-                </div>
-              </div>
-              <!-- AI Detect Module Button -->
-              <button type="button" id="detectBtn" class="detect-btn hidden">
-                <i class="fa-solid fa-wand-magic-sparkles"></i>
-                <span id="detectBtnText">Auto-Detect Module Type</span>
-              </button>
-              <!-- Suggestion Bar (shown after detection) -->
-              <div id="suggestionBar" class="suggestion-bar hidden"></div>
-            </div>
-
-            <button type="submit" id="submitBtn" class="btn-primary">
-              <span class="btn-text">Generate Test Plan</span>
-              <i class="fa-solid fa-arrow-right btn-icon"></i>
-            </button>
-            <div class="field-error form-submit-error" id="screenshotError"></div>
-          </div>
-        </form>
-
-        <div class="glass-card recent-card">
-          <h2 class="card-title">
-            <i class="fa-solid fa-clock-rotate-left header-icon text-accent"></i>
-            <span>Recent Generations</span>
-          </h2>
-          <div id="recentList" class="recent-list">
-            <div class="recent-empty">No recent output yet.</div>
-          </div>
-        </div>
-
-        <!-- Generated Files Library Section -->
-        <div class="glass-card library-card">
-          <h2 class="card-title">
-            <i class="fa-solid fa-folder-open header-icon text-accent"></i>
-            <span>Generated Plans</span>
-            <button
-              id="refreshLibraryBtn"
-              class="btn-refresh"
-              type="button"
-              title="Refresh list"
-            >
-              <i class="fa-solid fa-arrows-rotate"></i>
-            </button>
-          </h2>
-          <p class="library-subtitle">
-            Browse and preview generated Excel plans and optional recreate
-            scripts saved in the local <code>outputs/</code> folder.
-          </p>
-
-          <div id="libraryList" class="library-list">
-            <!-- Dynamically generated list items -->
-            <div class="library-empty">
-              <i class="fa-regular fa-folder-open empty-icon"></i>
-              <p>
-                No generated files found in <code>outputs/</code> yet.
+              </h2>
+              <p class="library-subtitle">
+                Browse and preview generated Excel plans and optional recreate
+                scripts saved in the local <code>outputs/</code> folder.
               </p>
+              <div id="libraryList" class="library-list">
+                <div class="library-empty">
+                  <i class="fa-regular fa-folder-open empty-icon"></i>
+                  <p>No generated files found in <code>outputs/</code> yet.</p>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+
+        </div><!-- /page-wrap -->
       </main>
 
       <footer class="app-footer">
@@ -759,6 +659,9 @@
               <button type="button" class="export-item" data-format="html">
                 <i class="fa-solid fa-file-code"></i> Export HTML
               </button>
+              <button type="button" class="export-item" data-format="pdf">
+                <i class="fa-solid fa-file-pdf"></i> Export PDF
+              </button>
             </div>
           </div>
         </div>
@@ -856,11 +759,8 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=1781700027"></script>
+    <script src="/static/app.js?v=1782000015"></script>
     <!-- Toast Notification Container -->
     <div id="toastContainer" class="toast-container"></div>
   </body>
 </html>
-
-
-

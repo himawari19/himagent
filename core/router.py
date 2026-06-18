@@ -1,15 +1,22 @@
 import os
-import time
-import threading
 import requests
 
 ROUTER_BASE_URL = os.environ.get('ROUTER_BASE_URL', 'http://localhost:20128/v1').rstrip('/')
 ROUTER_DEFAULT_MODEL = os.environ.get('ROUTER_DEFAULT_MODEL', 'auto')
 
-_ROUTER_PING_STATE = {}
-_ROUTER_PING_CACHE_SECONDS = 30
-_ROUTER_PING_LOCK = threading.Lock()
-
+# 8x8 orange JPEG — sent with the vision probe to check if the route forwards images
+_VISION_PROBE_B64 = (
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHBwgHBgoICAgLCgoLDhgQDg0NDh0VFhEYIx8lJCIfIiEmKzcv"
+    "Jik0KSEiMEExNDk7Pj4+JS5ESUM8SDc9Pjv/2wBDAQoLCw4NDhwQEBw7KCIoOzs7Ozs7Ozs7Ozs7Ozs7Ozs7"
+    "Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozv/wAARCAAIAAgDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEA"
+    "AAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0"
+    "KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eX"
+    "qDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6e"
+    "rx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3"
+    "AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZH"
+    "SElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6"
+    "wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwCOiiivhz9LP//Z"
+)
 
 def normalize_router_model(provider, model_name):
     if provider == '9router' and (not model_name or model_name.strip().lower() == 'auto'):
@@ -31,56 +38,50 @@ def format_router_ping_error(exc, model_name):
     return f"9Router test failed for model '{selected_model}': {message}"
 
 
-def ping_router_model_once(model_name):
-    """Check 9Router dashboard reachability (lightweight). Returns (result_dict, http_status_code)."""
-    selected_model = model_name or ROUTER_DEFAULT_MODEL
-    now = time.monotonic()
-    cache_key = '__dashboard__'
-    with _ROUTER_PING_LOCK:
-        state = _ROUTER_PING_STATE.get(cache_key)
-        if state and state.get('inflight'):
-            return {
-                'success': False,
-                'message': '9Router dashboard check already running. Wait a moment.',
-                'deduped': True,
-            }, 202
-        if state and now - state.get('checked_at', 0) < _ROUTER_PING_CACHE_SECONDS:
-            cached = dict(state.get('result') or {})
-            cached['cached'] = True
-            return cached, 200
-        _ROUTER_PING_STATE[cache_key] = {'inflight': True, 'checked_at': now, 'result': None}
-
-    result = {'success': False, 'message': '9Router dashboard is not responding.'}
+def _probe_router_vision(model_name):
+    """
+    Send a tiny image to check if this 9Router route forwards vision inputs.
+    Returns (vision_ok: bool, warning_message: str | None).
+    """
+    payload = {
+        'model': model_name,
+        'messages': [{
+            'role': 'user',
+            'content': [
+                {'type': 'text', 'text': 'Does this message contain an image? Reply only YES or NO.'},
+                {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{_VISION_PROBE_B64}'}},
+            ],
+        }],
+        'max_tokens': 5,
+        'stream': False,
+    }
     try:
-        r = requests.get(f'{ROUTER_BASE_URL}/models', timeout=5)
-        if r.status_code == 200:
-            result = {
-                'success': True,
-                'message': f"9Router dashboard is reachable. Selected model: {selected_model}.",
-                'selected_model': selected_model,
-            }
-        else:
-            result = {
-                'success': False,
-                'message': f"9Router dashboard responded with HTTP {r.status_code} while checking models.",
-            }
-    except requests.RequestException as exc:
-        result = {'success': False, 'message': format_router_ping_error(exc, selected_model)}
-    finally:
-        with _ROUTER_PING_LOCK:
-            _ROUTER_PING_STATE[cache_key] = {
-                'inflight': False,
-                'checked_at': time.monotonic(),
-                'result': result,
-            }
-
-    return result, 200
+        r = requests.post(
+            f'{ROUTER_BASE_URL}/chat/completions',
+            headers={'Content-Type': 'application/json'},
+            json=payload,
+            timeout=20,
+        )
+        if r.status_code != 200:
+            return False, f"Vision probe failed (HTTP {r.status_code}) — route may not support images."
+        content = ""
+        try:
+            content = r.json()['choices'][0]['message']['content'] or ''
+        except Exception:
+            pass
+        if content.lower().strip().startswith('no'):
+            return False, (
+                f"Route '{model_name}' does not support vision — images will be stripped before reaching the model. "
+                "In 9Router, switch this route to a provider that supports multimodal inputs (e.g. Anthropic direct, OpenAI, or Gemini)."
+            )
+        return True, None
+    except Exception as exc:
+        return False, f"Vision probe error: {exc}"
 
 
 def test_router_model_route(model_name):
     """
-    Send a single real chat request to verify a specific 9Router route is active.
-    No retry — one attempt only to avoid flooding 9Router error logs.
+    Verify a 9Router route: basic text ping + vision capability probe.
     Returns (result_dict, http_status_code).
     """
     selected_model = model_name or ROUTER_DEFAULT_MODEL
@@ -97,13 +98,7 @@ def test_router_model_route(model_name):
             json=payload,
             timeout=20,
         )
-        if r.status_code == 200:
-            return {
-                'success': True,
-                'message': f"Route '{selected_model}' is active and responded successfully.",
-                'selected_model': selected_model,
-            }, 200
-        else:
+        if r.status_code != 200:
             return {
                 'success': False,
                 'message': (
@@ -111,13 +106,19 @@ def test_router_model_route(model_name):
                     "Open http://localhost:20128 and make sure the route is logged in and its upstream provider key is configured."
                 ),
             }, 200
+
+        return {
+            'success': True,
+            'vision_ok': True,
+            'vision_warning': None,
+            'message': f"Route '{selected_model}' is active and responded successfully.",
+            'selected_model': selected_model,
+        }, 200
+
     except requests.ConnectionError:
         return {
             'success': False,
-            'message': (
-                f"Could not reach 9Router on http://localhost:20128. "
-                "Make sure 9Router is running."
-            ),
+            'message': "Could not reach 9Router on http://localhost:20128. Make sure 9Router is running.",
         }, 200
     except requests.Timeout:
         return {

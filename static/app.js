@@ -236,8 +236,23 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  function hideAllExportMenus() {
+    document.querySelectorAll(".export-menu").forEach((m) => {
+      m.classList.add("hidden");
+    });
+    document.querySelectorAll(".export-toggle-btn").forEach((btn) => {
+      btn.classList.remove("active");
+    });
+  }
+
+  window.addEventListener("scroll", hideAllExportMenus, { passive: true });
+  if (recentList) recentList.addEventListener("scroll", hideAllExportMenus, { passive: true });
+  const libraryListEl = document.getElementById("libraryList");
+  if (libraryListEl) libraryListEl.addEventListener("scroll", hideAllExportMenus, { passive: true });
+
   function renderRecentGenerations(files) {
     if (!recentList) return;
+    document.querySelectorAll("body > .dynamic-export-menu").forEach((el) => el.remove());
     const recent = [...files].sort((a, b) => (b.modified || 0) - (a.modified || 0)).slice(0, 5);
     recentList.innerHTML = "";
     if (!recent.length) {
@@ -258,10 +273,52 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
         <div class="recent-actions">
           <button type="button" class="btn-mini preview">Preview</button>
-          <a class="btn-mini" href="/api/export/${encodeURIComponent(file.name)}/xlsx">Export</a>
+          <div class="export-dropdown-wrapper">
+            <button type="button" class="btn-mini export-toggle-btn">
+              <i class="fa-solid fa-file-export"></i> Export
+              <i class="fa-solid fa-chevron-down" style="font-size: 8px; margin-left: 2px;"></i>
+            </button>
+            <div class="export-menu dynamic-export-menu hidden">
+              <button type="button" class="export-item" data-format="xlsx"><i class="fa-solid fa-file-excel text-success"></i> XLSX</button>
+              <button type="button" class="export-item" data-format="csv"><i class="fa-solid fa-file-csv text-accent"></i> CSV</button>
+              <button type="button" class="export-item" data-format="json"><i class="fa-solid fa-code text-accent"></i> JSON</button>
+              <button type="button" class="export-item" data-format="markdown"><i class="fa-brands fa-markdown text-accent"></i> Markdown</button>
+              <button type="button" class="export-item" data-format="html"><i class="fa-solid fa-file-code text-accent"></i> HTML</button>
+            </div>
+          </div>
         </div>`;
       item.querySelector(".recent-name").textContent = file.name;
       item.querySelector(".preview").addEventListener("click", () => openPreview(file.name));
+
+      const toggleBtn = item.querySelector(".export-toggle-btn");
+      const menu = item.querySelector(".export-menu");
+      if (toggleBtn && menu) {
+        toggleBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const isOpen = !menu.classList.contains("hidden");
+          hideAllExportMenus();
+          if (!isOpen) {
+            document.body.appendChild(menu);
+            toggleBtn.classList.add("active");
+            menu.classList.remove("hidden");
+            const rect = toggleBtn.getBoundingClientRect();
+            menu.style.position = "fixed";
+            menu.style.zIndex = "99999";
+            menu.style.top = `${rect.bottom + 6}px`;
+            menu.style.left = `${rect.right - 180}px`;
+          }
+        });
+
+        menu.querySelectorAll(".export-item").forEach((menuItem) => {
+          menuItem.addEventListener("click", () => {
+            const format = menuItem.getAttribute("data-format");
+            hideAllExportMenus();
+            showToast(`Preparing ${format.toUpperCase()} export...`, "info", 3000);
+            window.location.href = `/api/export/${encodeURIComponent(file.name)}/${format}`;
+          });
+        });
+      }
+
       recentList.appendChild(item);
     });
   }
@@ -701,6 +758,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const cfg = {
       checking: { text: "Checking...", color: "#0f766e" },
       connected: { text: "Connected", color: "#10b981" },
+      warning:  { text: "No vision support", color: "#f59e0b" },
       failed: { text: currentProvider === "9router" ? "Route issue" : "Unreachable", color: "#ef4444" },
     };
     const c = cfg[state] || cfg.failed;
@@ -815,8 +873,15 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  let _routerTestTs = 0;
   async function testSelectedRouterModel() {
     if (providerSelect.value !== "9router") return;
+    const now = Date.now();
+    if (now - _routerTestTs < 4000) {
+      showToast("Please wait a moment before testing again.", "warning", 3000);
+      return;
+    }
+    _routerTestTs = now;
     const modelName = getSelectedModelValue();
     const modelLabel = getSelectedModelLabel();
 
@@ -842,19 +907,24 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch("/api/ping", { method: "POST", body: fd });
       const data = await res.json();
       routerConnected = !!data.success;
-      setApiKeyStatus(data.success ? "connected" : "failed");
+      const hasVisionWarn = data.success && data.vision_warning;
+      setApiKeyStatus(hasVisionWarn ? "warning" : (data.success ? "connected" : "failed"));
       if (routerStatus) {
         routerStatus.textContent = data.success
-          ? `Connected — ${modelLabel}`
+          ? `Connected — ${modelLabel}${hasVisionWarn ? " ⚠ No vision" : ""}`
           : `Not connected: ${modelLabel}`;
-        routerStatus.title = data.message || modelName;
-        routerStatus.style.color = data.success ? "#10b981" : "#ef4444";
+        routerStatus.title = hasVisionWarn ? data.vision_warning : (data.message || modelName);
+        routerStatus.style.color = hasVisionWarn ? "#f59e0b" : (data.success ? "#10b981" : "#ef4444");
       }
-      showToast(
-        data.success ? `9Router route is ready for ${modelLabel}.` : data.message,
-        data.success ? "success" : "warning",
-        data.success ? 3500 : 8000,
-      );
+      if (hasVisionWarn) {
+        showToast(`⚠ Vision not supported: ${data.vision_warning}`, "warning", 12000);
+      } else {
+        showToast(
+          data.success ? `9Router route is ready for ${modelLabel}.` : data.message,
+          data.success ? "success" : "warning",
+          data.success ? 3500 : 8000,
+        );
+      }
     } catch (err) {
       setApiKeyStatus("failed");
       showToast(`9Router test failed: ${err.message}`, "warning", 8000);
@@ -1506,7 +1576,7 @@ document.addEventListener("DOMContentLoaded", () => {
     startSubtitleRotation();
 
     progressCard.classList.add("hidden");
-    infoCard.classList.add("hidden");
+    infoCard?.classList.add("hidden");
     resultCard.classList.add("hidden");
     generatorForm.classList.add("hidden");
     submitBtn.disabled = true;
@@ -1803,8 +1873,6 @@ document.addEventListener("DOMContentLoaded", () => {
   // ---------------------------------------------------------------------------
   // Job Polling
   // ---------------------------------------------------------------------------
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
   function applyJobProgress(job) {
     if (!job) return;
     const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
@@ -1834,41 +1902,41 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  async function pollGenerationJob(statusUrl) {
-    let lastStatus = "";
-    let delayMs = 900;
-    for (let attempt = 0; attempt < 240; attempt++) {
-      const response = await fetch(statusUrl, { cache: "no-store" });
-      const job = await response.json();
-      if (!job.success) {
-        throw new Error(job.message || "Unable to fetch job status.");
-      }
+  function pollGenerationJob(statusUrl) {
+    const streamUrl = statusUrl + "/stream";
+    return new Promise((resolve, reject) => {
+      const es = new EventSource(streamUrl);
+      let lastMsg = "";
+      const timeout = setTimeout(() => {
+        es.close();
+        reject(new Error("Timed out waiting for generation job."));
+      }, 5 * 60 * 1000);
 
-      if (typeof job.progress === "number") {
-        applyJobProgress(job);
-      }
-
-      if (job.message && job.message !== lastStatus) {
-        addLog(job.message, job.status === "failed" ? "error" : "info");
-        lastStatus = job.message;
-      }
-
-      if (job.status === "completed") {
-        return job;
-      }
-      if (job.status === "failed") {
-        throw new Error(job.error || job.message || "Generation failed.");
-      }
-
-      if (job.progress >= 60) {
-        delayMs = 1400;
-      } else if (job.progress >= 30) {
-        delayMs = 1100;
-      }
-      await sleep(delayMs);
-      delayMs = Math.min(2000, delayMs + 120);
-    }
-    throw new Error("Timed out waiting for generation job.");
+      es.onmessage = (e) => {
+        let job;
+        try { job = JSON.parse(e.data); } catch { return; }
+        if (typeof job.progress === "number") applyJobProgress(job);
+        if (job.message && job.message !== lastMsg) {
+          addLog(job.message, job.status === "failed" ? "error" : "info");
+          lastMsg = job.message;
+        }
+        if (job.status === "completed") {
+          clearTimeout(timeout); es.close(); resolve({ ...job, success: true });
+        }
+        if (job.status === "failed") {
+          clearTimeout(timeout); es.close();
+          reject(new Error(job.error || job.message || "Generation failed."));
+        }
+      };
+      es.addEventListener("error", () => {
+        clearTimeout(timeout); es.close();
+        reject(new Error("SSE connection lost. Please retry."));
+      });
+      es.addEventListener("timeout", () => {
+        clearTimeout(timeout); es.close();
+        reject(new Error("Timed out waiting for generation job."));
+      });
+    });
   }
 
   const previewModal = document.getElementById("previewModal");
@@ -1903,6 +1971,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const result = await response.json();
 
       const libraryList = document.getElementById("libraryList");
+      document.querySelectorAll("body > .dynamic-export-menu").forEach((el) => el.remove());
       libraryList.innerHTML = "";
       libraryFileIndex = new Map();
 
@@ -1949,80 +2018,97 @@ document.addEventListener("DOMContentLoaded", () => {
         const moduleBody = document.createElement("div");
         moduleBody.className = "lib-module-body hidden";
 
-        function buildSubFolder(label, iconClass, colorClass, files) {
-          if (files.length === 0) return null;
+        const allFiles = [...excelFiles, ...scriptFiles];
+        allFiles.sort((a, b) => b.modified - a.modified);
 
-          const subBlock = document.createElement("div");
-          subBlock.className = "lib-subfolder-block";
+        allFiles.forEach((file) => {
+          const sizeKB = (file.size / 1024).toFixed(1) + " KB";
+          const dateObj = new Date(file.modified * 1000);
+          const dateStr = dateObj.toLocaleDateString() + " " + dateObj.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-          const subHeader = document.createElement("div");
-          subHeader.className = "lib-subfolder-header";
-          subHeader.innerHTML = `
-            <i class="fa-solid ${iconClass} ${colorClass}"></i>
-            <span>${label}</span>
-            <span class="lib-sub-count">${files.length}</span>
-            <i class="fa-solid fa-chevron-right lib-sub-chevron"></i>
-          `;
-          subBlock.appendChild(subHeader);
+          libraryFileIndex.set(file.name, {
+            name: file.name,
+            modified: file.modified,
+            size: file.size,
+            type: file.type,
+          });
 
-          const subBody = document.createElement("div");
-          subBody.className = "lib-subfolder-body hidden";
-
-          files.forEach((file) => {
-            const sizeKB = (file.size / 1024).toFixed(1) + " KB";
-            const dateObj = new Date(file.modified * 1000);
-            const dateStr = dateObj.toLocaleDateString() + " " + dateObj.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-
-            libraryFileIndex.set(file.name, {
-              name: file.name,
-              modified: file.modified,
-              size: file.size,
-              type: file.type,
-            });
-
-            const fileRow = document.createElement("div");
-            fileRow.className = "lib-file-row";
-            fileRow.innerHTML = `
-              <div class="lib-file-details">
-                <i class="fa-solid ${file.type === 'excel' ? 'fa-file-excel excel' : 'fa-file-code python'} file-icon"></i>
-                <div class="lib-file-meta">
-                  <span class="lib-file-name">${file.name}</span>
-                  <span class="lib-file-sub">
-                    <span><i class="fa-solid fa-weight-hanging"></i> ${sizeKB}</span>
-                    <span><i class="fa-solid fa-clock"></i> ${dateStr}</span>
-                  </span>
+          const isExcel = file.type === 'excel' || file.name.endsWith('.xlsx');
+          const fileRow = document.createElement("div");
+          fileRow.className = "lib-file-row";
+          fileRow.innerHTML = `
+            <div class="lib-file-details">
+              <i class="fa-solid ${isExcel ? 'fa-file-excel excel' : 'fa-file-code python'} file-icon"></i>
+              <div class="lib-file-meta">
+                <span class="lib-file-name">${file.name}</span>
+                <span class="lib-file-sub">
+                  <span><i class="fa-solid fa-weight-hanging"></i> ${sizeKB}</span>
+                  <span><i class="fa-solid fa-clock"></i> ${dateStr}</span>
+                </span>
+              </div>
+            </div>
+            <div class="lib-actions">
+              <button class="btn-lib-action preview" type="button"><i class="fa-solid fa-eye"></i> Preview</button>
+              ${isExcel ? `
+                <div class="export-dropdown-wrapper">
+                  <button type="button" class="btn-lib-action export-toggle-btn">
+                    <i class="fa-solid fa-file-export"></i> Export
+                    <i class="fa-solid fa-chevron-down" style="font-size: 8px; margin-left: 2px;"></i>
+                  </button>
+                  <div class="export-menu dynamic-export-menu hidden">
+                    <button type="button" class="export-item" data-format="xlsx"><i class="fa-solid fa-file-excel text-success"></i> XLSX</button>
+                    <button type="button" class="export-item" data-format="csv"><i class="fa-solid fa-file-csv text-accent"></i> CSV</button>
+                    <button type="button" class="export-item" data-format="json"><i class="fa-solid fa-code text-accent"></i> JSON</button>
+                    <button type="button" class="export-item" data-format="markdown"><i class="fa-brands fa-markdown text-accent"></i> Markdown</button>
+                    <button type="button" class="export-item" data-format="html"><i class="fa-solid fa-file-code text-accent"></i> HTML</button>
+                  </div>
                 </div>
-              </div>
-              <div class="lib-actions">
-                <button class="btn-lib-action preview" type="button"><i class="fa-solid fa-eye"></i> Preview</button>
-                <a href="/api/download/${file.name}" class="btn-lib-action download"><i class="fa-solid fa-download"></i> Download</a>
-                <button class="btn-lib-action delete" type="button"><i class="fa-solid fa-trash"></i></button>
-              </div>
-            `;
+              ` : `
+                <a href="/api/download/${file.name}" class="btn-lib-action download"><i class="fa-solid fa-file-export"></i> Export</a>
+              `}
+              <button class="btn-lib-action delete" type="button"><i class="fa-solid fa-trash"></i></button>
+            </div>
+          `;
 
-            fileRow.querySelector(".preview").addEventListener("click", () => openPreview(file.name));
-            fileRow.querySelector(".delete").addEventListener("click", (e) => {
-              e.stopPropagation();
-              deleteFile(file.name, e.currentTarget);
-            });
-
-            subBody.appendChild(fileRow);
+          fileRow.querySelector(".preview").addEventListener("click", () => openPreview(file.name));
+          fileRow.querySelector(".delete").addEventListener("click", (e) => {
+            e.stopPropagation();
+            deleteFile(file.name, e.currentTarget);
           });
 
-          subBlock.appendChild(subBody);
-          subHeader.addEventListener("click", () => {
-            const isOpen = !subBody.classList.contains("hidden");
-            subBody.classList.toggle("hidden", isOpen);
-            subHeader.querySelector(".lib-sub-chevron").style.transform = isOpen ? "rotate(0deg)" : "rotate(90deg)";
-          });
+          if (isExcel) {
+            const toggleBtn = fileRow.querySelector(".export-toggle-btn");
+            const menu = fileRow.querySelector(".export-menu");
+            if (toggleBtn && menu) {
+              toggleBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const isOpen = !menu.classList.contains("hidden");
+                hideAllExportMenus();
+                if (!isOpen) {
+                  document.body.appendChild(menu);
+                  toggleBtn.classList.add("active");
+                  menu.classList.remove("hidden");
+                  const rect = toggleBtn.getBoundingClientRect();
+                  menu.style.position = "fixed";
+                  menu.style.zIndex = "99999";
+                  menu.style.top = `${rect.bottom + 6}px`;
+                  menu.style.left = `${rect.right - 180}px`;
+                }
+              });
 
-          return subBlock;
-        }
+              menu.querySelectorAll(".export-item").forEach((menuItem) => {
+                menuItem.addEventListener("click", () => {
+                  const format = menuItem.getAttribute("data-format");
+                  hideAllExportMenus();
+                  showToast(`Preparing ${format.toUpperCase()} export...`, "info", 3000);
+                  window.location.href = `/api/export/${encodeURIComponent(file.name)}/${format}`;
+                });
+              });
+            }
+          }
 
-        const excelSub = buildSubFolder("excel", "fa-file-excel", "excel", excelFiles);
-        const scriptSub = buildSubFolder("scripts", "fa-file-code", "python", scriptFiles);
-        if (excelSub) moduleBody.appendChild(excelSub);
-        if (scriptSub) moduleBody.appendChild(scriptSub);
+          moduleBody.appendChild(fileRow);
+        });
 
         moduleBlock.appendChild(moduleBody);
         moduleHeader.addEventListener("click", () => {
@@ -2245,6 +2331,7 @@ document.addEventListener("DOMContentLoaded", () => {
         resultExportMenu.classList.add("hidden");
         if (resultExportToggleBtn) resultExportToggleBtn.classList.remove("active");
       }
+      hideAllExportMenus();
     }
   });
 
@@ -2626,38 +2713,24 @@ document.addEventListener("DOMContentLoaded", () => {
       step2Mid4: false,
       step2Mid5: false,
     };
-    startProgress();
-    console.log("[DEBUG] startProgress() called");
-
-    // Compile payload
-    const formData = new FormData();
-    selectedFiles.forEach((file) => {
-      formData.append("screenshot", file);
-      formData.append("screen_context", getScreenContext(file));
-    });
-    formData.append("page_title", pageTitleInput.value);
-    formData.append("id_prefix", idPrefixInput.value);
-    const selectedModelName = getSelectedModelValue();
-    formData.append("model_name", selectedModelName);
-    formData.append("api_key", apiKeyInput.value);
-    formData.append("provider", providerSelect.value);
-    formData.append("instructions", instructionsInput.value);
-    if (genDepthSelect) {
-      formData.append("gen_depth", genDepthSelect.value);
-    }
-    formData.append("generate_script", generateScriptToggle && generateScriptToggle.checked ? "1" : "0");
-    console.log(
-      "[DEBUG] Payload ready — page_title:",
-      pageTitleInput.value,
-      "| provider:",
-      providerSelect.value,
-      "| model:",
-      selectedModelName,
-      "| gen_depth:",
-      genDepthSelect ? genDepthSelect.value : "fast"
-    );
-
     try {
+      startProgress();
+
+      const formData = new FormData();
+      selectedFiles.forEach((file) => {
+        formData.append("screenshot", file);
+        formData.append("screen_context", getScreenContext(file));
+      });
+      formData.append("page_title", pageTitleInput.value);
+      formData.append("id_prefix", idPrefixInput.value);
+      const selectedModelName = getSelectedModelValue();
+      formData.append("model_name", selectedModelName);
+      formData.append("api_key", apiKeyInput.value);
+      formData.append("provider", providerSelect.value);
+      formData.append("instructions", instructionsInput.value);
+      if (genDepthSelect) formData.append("gen_depth", genDepthSelect.value);
+      formData.append("generate_script", generateScriptToggle?.checked ? "1" : "0");
+
       console.log("[DEBUG] Sending POST /api/generate...");
       const controller = new AbortController();
       const timeoutId = setTimeout(() => {
@@ -2783,7 +2856,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Toggle card visibility back
     resultCard.classList.add("hidden");
-    infoCard.classList.remove("hidden");
+    infoCard?.classList.remove("hidden");
     generatorForm.classList.remove("hidden");
     if (pyFileRow) pyFileRow.style.display = "none";
     downloadPyBtn.style.display = "none";
@@ -3054,4 +3127,177 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
   }
+
+  // ===========================================================================
+  // THEME PICKER
+  // ===========================================================================
+  document.documentElement.classList.add("theme-emerald");
+
+  // ===========================================================================
+  // BATCH MODE
+  // ===========================================================================
+  const batchToggle = document.getElementById("batchToggle");
+  const batchBody = document.getElementById("batchBody");
+  const batchChevron = document.getElementById("batchChevron");
+  const batchModuleList = document.getElementById("batchModuleList");
+  const addBatchModuleBtn = document.getElementById("addBatchModuleBtn");
+  const submitBtnText = document.getElementById("submitBtnText");
+  const batchResultCard = document.getElementById("batchResultCard");
+  const batchJobList = document.getElementById("batchJobList");
+  let batchModules = [];
+
+  batchToggle.addEventListener("click", () => {
+    const open = !batchBody.classList.contains("hidden");
+    batchBody.classList.toggle("hidden", open);
+    batchChevron.classList.toggle("open", !open);
+    submitBtnText.textContent = !open && batchModules.length
+      ? `Generate ${1 + batchModules.length} Test Plans`
+      : "Generate Test Plan";
+  });
+
+  function renderBatchRows() {
+    batchModuleList.innerHTML = "";
+    batchModules.forEach((mod, i) => {
+      const row = document.createElement("div");
+      row.className = "batch-module-row";
+      row.innerHTML = `
+        <input type="text" placeholder="Module title" value="${mod.title}" data-idx="${i}" data-field="title" />
+        <input type="text" placeholder="TC-PREFIX-" value="${mod.prefix}" style="width:110px" data-idx="${i}" data-field="prefix" />
+        <button class="btn-remove-module" data-idx="${i}" title="Remove"><i class="fa-solid fa-xmark"></i></button>`;
+      batchModuleList.appendChild(row);
+    });
+    const count = batchModules.length;
+    submitBtnText.textContent = count
+      ? `Generate ${1 + count} Test Plans`
+      : "Generate Test Plan";
+  }
+
+  batchModuleList.addEventListener("input", (e) => {
+    const idx = +e.target.dataset.idx;
+    const field = e.target.dataset.field;
+    if (field && !isNaN(idx)) batchModules[idx][field] = e.target.value;
+    submitBtnText.textContent = `Generate ${1 + batchModules.length} Test Plans`;
+  });
+
+  batchModuleList.addEventListener("click", (e) => {
+    const btn = e.target.closest(".btn-remove-module");
+    if (!btn) return;
+    batchModules.splice(+btn.dataset.idx, 1);
+    renderBatchRows();
+  });
+
+  addBatchModuleBtn.addEventListener("click", () => {
+    batchModules.push({ title: "", prefix: "TC-" });
+    renderBatchRows();
+  });
+
+  function createBatchJobItem(jobInfo) {
+    const el = document.createElement("div");
+    el.className = "batch-job-item";
+    el.id = `batch-job-${jobInfo.job_id}`;
+    el.innerHTML = `
+      <div class="batch-job-header">
+        <i class="fa-solid fa-spinner fa-spin"></i>
+        <span>${jobInfo.module || "Module"}</span>
+        <span class="batch-job-status">Queued…</span>
+      </div>
+      <div class="batch-job-progress"><div class="batch-job-bar" style="width:0%"></div></div>
+      <div class="batch-job-links"></div>`;
+    return el;
+  }
+
+  function updateBatchJobItem(el, job) {
+    const statusEl = el.querySelector(".batch-job-status");
+    const bar = el.querySelector(".batch-job-bar");
+    const links = el.querySelector(".batch-job-links");
+    const icon = el.querySelector(".batch-job-header i");
+    const progress = job.progress || 0;
+    bar.style.width = `${progress}%`;
+    statusEl.textContent = job.message || job.status || "";
+    if (job.status === "completed") {
+      el.classList.add("done");
+      icon.className = "fa-solid fa-circle-check";
+      if (job.xlsx_filename) {
+        links.innerHTML = `
+          <a href="/api/preview/${job.xlsx_filename}" target="_blank"><i class="fa-solid fa-eye"></i> Preview</a>
+          <a href="/api/export/${job.xlsx_filename}/xlsx"><i class="fa-solid fa-download"></i> Download</a>
+          <a href="/api/export/${job.xlsx_filename}/pdf"><i class="fa-solid fa-file-pdf"></i> PDF</a>`;
+      }
+    } else if (job.status === "failed") {
+      el.classList.add("failed");
+      icon.className = "fa-solid fa-circle-xmark";
+      statusEl.textContent = job.error || job.message || "Failed";
+    }
+  }
+
+  async function runBatchGeneration(formData, modules) {
+    batchResultCard.classList.remove("hidden");
+    batchJobList.innerHTML = "";
+
+    // 1st job = main form module (use regular /api/generate via existing flow)
+    // Extra jobs = batch modules, submitted with same files
+    const fileInputs = document.getElementById("screenshots").files;
+    const fileData = await Promise.all(Array.from(fileInputs).map(f =>
+      f.arrayBuffer().then(buf => ({
+        filename: f.name,
+        data_b64: btoa(String.fromCharCode(...new Uint8Array(buf))),
+      }))
+    ));
+
+    const common = {
+      model_name: formData.get("model_name"),
+      api_key: formData.get("api_key"),
+      provider: formData.get("provider"),
+      gen_depth: formData.get("gen_depth"),
+      instructions: formData.get("instructions"),
+      generate_script: formData.get("generate_script") === "1",
+      screen_contexts: formData.getAll("screen_context"),
+    };
+
+    const res = await fetch("/api/batch-generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ modules, common, files: fileData }),
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message || "Batch failed");
+
+    const items = data.jobs.map(jobInfo => {
+      const el = createBatchJobItem(jobInfo);
+      batchJobList.appendChild(el);
+      return { el, jobInfo };
+    });
+
+    await Promise.allSettled(items.map(({ el, jobInfo }) =>
+      new Promise((resolve) => {
+        const es = new EventSource(jobInfo.stream_url);
+        const done = () => { es.close(); resolve(); };
+        es.onmessage = (e) => {
+          let job; try { job = JSON.parse(e.data); } catch { return; }
+          updateBatchJobItem(el, job);
+          if (job.status === "completed" || job.status === "failed") done();
+        };
+        es.addEventListener("error", done);
+        es.addEventListener("timeout", done);
+        setTimeout(done, 5 * 60 * 1000);
+      })
+    ));
+  }
+
+  // Wire batch into the existing form submit (runs after main generation completes)
+  generatorForm.addEventListener("submit", async () => {
+    if (batchModules.length === 0) return;
+    const validModules = batchModules.filter(m => m.title.trim());
+    if (validModules.length === 0) return;
+    const fd = new FormData(generatorForm);
+    try {
+      await runBatchGeneration(fd, validModules.map(m => ({
+        page_title: m.title.trim(),
+        id_prefix: m.prefix.trim() || "TC-",
+      })));
+    } catch (err) {
+      showToast("Batch error: " + err.message, "error");
+    }
+  });
 });
+
