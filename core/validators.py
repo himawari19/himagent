@@ -17,17 +17,3 @@ def add_casetype_validation(ws, cell_range: str):
     ws.add_data_validation(dv)
     dv.add(cell_range)
     return dv
-
-
-def add_status_validation(ws, cell_range: str):
-    """Dropdown: PENDING / PASSED / FAILED on STATUS column."""
-    dv = DataValidation(
-        type="list",
-        formula1='"PENDING,PASSED,FAILED"',
-        allow_blank=True
-    )
-    dv.error      = "Select PENDING, PASSED, or FAILED"
-    dv.errorTitle = "Invalid Status"
-    ws.add_data_validation(dv)
-    dv.add(cell_range)
-    return dv

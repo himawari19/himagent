@@ -1,42 +1,12 @@
 """
 core/helpers.py
-Shared helper functions: style_header, style_body, section_row,
-format_scenario (Title Case + acronym preservation).
+Shared helper functions: style_header, style_body, section_row.
 """
-from openpyxl.styles import Font
 from core.styles import (
     header_font, header_fill, body_font,
     section_font, section_fill,
     wrap_align, center_align, section_align, thin_border
 )
-
-# Acronyms that must stay fully uppercase in scenario titles
-_ACRONYMS = {
-    "E2E", "XSS", "SQL", "CSRF", "EXIF", "RTL", "CJK", "WCAG",
-    "HTTP", "API", "URL", "UI", "UX", "UIUX", "PNG", "JPG", "WEBP",
-    "SVG", "PDF", "MP4", "NSFW", "PII", "ARIA",
-}
-
-
-def format_scenario(raw: str) -> str:
-    """
-    Convert a raw scenario code/string to display Title Case.
-    e.g. 'NAVBAR.LOGO — Standard Click' → 'Navbar Logo - Standard Click'
-    Preserves known acronyms in full uppercase.
-    """
-    # Replace dot separators in area code with space
-    text = raw.replace(".", " ").replace("—", "-")
-    parts = text.split()
-    result = []
-    for part in parts:
-        upper = part.upper().strip("_-")
-        if upper in _ACRONYMS:
-            result.append(upper)
-        elif part == "-":
-            result.append("-")
-        else:
-            result.append(part.capitalize())
-    return " ".join(result)
 
 
 def style_header(ws, row: int, max_col: int):

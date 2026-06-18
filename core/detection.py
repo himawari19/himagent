@@ -1,5 +1,4 @@
 import json
-import os
 import re
 
 import requests
@@ -43,27 +42,6 @@ _DETECT_CLAUDE_TOOL = {
         "required": ["module_name", "tc_prefix", "module_type", "confidence", "description"],
     },
 }
-
-
-def resolve_api_key(provider, user_api_key):
-    """Return the effective API key, falling back to environment variables."""
-    key = user_api_key if (user_api_key and user_api_key.lower() != 'env') else ""
-    if key:
-        return key
-    env_map = {
-        'gemini': ['GEMINI_API_KEY'],
-        'openai': ['OPENAI_API_KEY'],
-        'claude': ['ANTHROPIC_API_KEY', 'CLAUDE_API_KEY'],
-        'mimo': ['MIMO_API_KEY', 'XIAOMI_API_KEY'],
-        'deepseek': ['DEEPSEEK_API_KEY'],
-        'grok': ['XAI_API_KEY', 'GROK_API_KEY'],
-        'mistral': ['MISTRAL_API_KEY'],
-    }
-    for env_var in env_map.get(provider, []):
-        val = os.environ.get(env_var, "")
-        if val:
-            return val
-    return ""
 
 
 def detect_module_from_screenshot(provider, model_name, api_key, pil_img):

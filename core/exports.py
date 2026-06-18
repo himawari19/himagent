@@ -167,4 +167,64 @@ def export_workbook(file_path, filename, export_format):
     if export_format == 'html':
         return BytesIO(_ws_to_html_bytes(ws, base_name)), 'text/html', f"{base_name}.html"
 
+    if export_format == 'pdf':
+        return BytesIO(_ws_to_pdf_bytes(ws, base_name)), 'application/pdf', f"{base_name}.pdf"
+
     return None, None, None
+
+
+def _ws_to_pdf_bytes(ws, base_name):
+    from fpdf import FPDF
+    title = base_name.replace('testplan_', '').replace('_', ' ').title()
+
+    pdf = FPDF(orientation='L', format='A4')
+    pdf.set_auto_page_break(auto=True, margin=12)
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 13)
+    pdf.cell(0, 9, f'Test Plan: {title}', ln=True)
+    pdf.ln(3)
+
+    COL_W = [14, 60, 18, 38, 58, 58]  # A4 landscape ≈ 277mm usable
+    HDR_H = 7
+    ROW_H = 6
+
+    headers = None
+    for row in ws.iter_rows(values_only=True):
+        cells = [str(c) if c is not None else '' for c in row]
+        if not any(cells):
+            continue
+
+        # Section header row (merged, no TC-ID)
+        if cells[0] and not str(cells[0]).startswith('TC') and not headers:
+            # still before data — skip
+            continue
+        if headers and cells[0] and not str(cells[0]).startswith('TC') and str(cells[0]) not in ('TC-ID', 'NO'):
+            pdf.set_font('Helvetica', 'B', 7)
+            pdf.set_fill_color(180, 198, 231)
+            pdf.cell(sum(COL_W), HDR_H, cells[0][:90], border=1, ln=True, fill=True)
+            pdf.set_font('Helvetica', size=7)
+            continue
+
+        # Header row
+        if 'TC-ID' in cells or 'NO' in cells:
+            headers = cells
+            pdf.set_font('Helvetica', 'B', 7)
+            pdf.set_fill_color(47, 84, 150)
+            pdf.set_text_color(255, 255, 255)
+            for i, w in enumerate(COL_W):
+                h = headers[i] if i < len(headers) else ''
+                pdf.cell(w, HDR_H, str(h)[:18], border=1, fill=True)
+            pdf.ln()
+            pdf.set_text_color(0, 0, 0)
+            pdf.set_font('Helvetica', size=7)
+            continue
+
+        if not headers or not str(cells[0]).startswith('TC'):
+            continue
+
+        for i, w in enumerate(COL_W):
+            val = cells[i] if i < len(cells) else ''
+            pdf.cell(w, ROW_H, str(val)[:55], border=1)
+        pdf.ln()
+
+    return bytes(pdf.output())

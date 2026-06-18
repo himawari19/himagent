@@ -2,11 +2,10 @@
 core/sheets.py
 Generic sheet-writing functions used by all test plan entry points.
 
-Sheet builders:
-  - build_testcase_sheet_create: Sheet 1 - test cases (createProject style: TC-ID + list of tuples)
-  - build_testcase_sheet_v2: Sheet 1 - test cases (imageGen/videoGen style: add() accumulator)
-  - build_summary_sheet    : Sheet 2 - SUMMARY with COUNTIF formulas + pie chart
-  - apply_conditional_fmt  : Conditional formatting on Case Type column
+  - build_main_testplan  : main pipeline builder (Sheet 1 + SUMMARY)
+  - build_testcase_sheet_v2: Sheet 1 builder used by generated .py scripts
+  - build_summary_sheet  : Sheet 2 - SUMMARY with pie chart
+  - apply_conditional_fmt: conditional formatting on Case Type column
 """
 from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import CellIsRule
@@ -16,56 +15,10 @@ from core.styles import (
     green_fill, red_fill, yellow_fill, gray_fill
 )
 from core.helpers import style_header, style_body, section_row
-from core.validators import add_casetype_validation, add_status_validation
+from core.validators import add_casetype_validation
 
 
-# ── Sheet 1 variant A: createProject (TC-ID col, list-of-tuples "tests") ────
-
-def build_testcase_sheet_create(wb, sheet_title: str, headers: list,
-                                col_widths: list, tests: list) -> tuple:
-    """
-    Build test-case sheet for createProject format.
-    tests items are either:
-      ("SECTION", "title string")   → section row
-      (tc_id, case_type, precond, steps, expected)  → data row
-
-    Returns (ws, last_row) where last_row is the final written row number.
-    """
-    ws = wb.active
-    ws.title = sheet_title
-
-    for c, h in enumerate(headers, 1):
-        ws.cell(row=1, column=c, value=h)
-    style_header(ws, 1, len(headers))
-
-    for i, w in enumerate(col_widths, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-    ws.freeze_panes = "A2"
-
-    row = 2
-    for item in tests:
-        if item[0] == "SECTION":
-            section_row(ws, row, item[1], len(headers))
-        else:
-            tc_id, case_type, precond, steps, expected = item
-            # Split tc_id to separate TC-ID and TEST SCENARIO
-            parts = tc_id.split(' | ', 1)
-            tc_id_val = parts[0].strip()
-            scenario_val = parts[1].strip() if len(parts) > 1 else ""
-            
-            # Align with headers: TC-ID, TEST SCENARIO, CASE TYPE, PRE-CONDITION, STEP SCENARIO, EXPECTED RESULT, ACTUAL RESULT, EVIDENCE
-            values = [tc_id_val, scenario_val, case_type, precond, steps, expected, "", ""]
-            for c, v in enumerate(values, 1):
-                ws.cell(row=row, column=c, value=v)
-            style_body(ws, row, len(headers))
-        row += 1
-
-    # Data validation for CASE TYPE (col 3 = C)
-    add_casetype_validation(ws, f"C2:C{row - 1}")
-    return ws, row
-
-
-# ── Sheet 1 variant B: imageGen / videoGen (NO col, add() accumulator) ──────
+# ── Sheet 1 builder (used by generated .py scripts) ─────────────────────────
 
 def build_testcase_sheet_v2(wb, sheet_title: str, headers: list,
                              col_widths: list, test_cases: list) -> tuple:
@@ -211,6 +164,87 @@ def build_summary_sheet(wb, sheet1_title: str, summary_rows: list):
         print(f"[WARNING] Could not add chart to SUMMARY: {e}")
 
     return ws2
+
+
+# ── Main testplan builder (used by _run_generation_pipeline) ─────────────────
+
+def build_main_testplan(wb, title: str, prefix: str, test_cases: list,
+                        model_name: str = "gemini", gen_depth: str = "exhaustive") -> tuple:
+    """
+    Build Sheet 1 (test cases) + Sheet 2 (SUMMARY) from Pydantic TestCaseSchema objects.
+    Returns (tc_count, ordered_cases).
+    """
+    ws1 = wb.active
+    sheet1_title = f"TEST PLAN - {title}"
+    if len(sheet1_title) > 30:
+        sheet1_title = sheet1_title[:27] + "..."
+    ws1.title = sheet1_title
+
+    headers = ["TC-ID", "TEST SCENARIO", "CASE TYPE", "PRE-CONDITION",
+               "STEP SCENARIO", "EXPECTED RESULT", "ACTUAL RESULT", "EVIDENCE"]
+    for c, h in enumerate(headers, 1):
+        ws1.cell(row=1, column=c, value=h)
+    style_header(ws1, 1, len(headers))
+
+    for i, w in enumerate([10, 45, 14, 30, 60, 55, 18, 18], 1):
+        ws1.column_dimensions[get_column_letter(i)].width = w
+    ws1.freeze_panes = "A2"
+
+    # Group by feature area for section headers
+    grouped: dict = {}
+    for tc in test_cases:
+        parts = tc.scenario.split(' - ')
+        area = parts[0].strip().strip('[]') if len(parts) > 1 else "General"
+        grouped.setdefault(area, []).append(tc)
+
+    ordered_cases = [tc for cases in grouped.values() for tc in cases]
+    current_row = 2
+    tc_counter = 1
+    for area, cases in grouped.items():
+        section_row(ws1, current_row, f"SECTION: {area.upper()} TESTS", len(headers))
+        current_row += 1
+        for tc in cases:
+            ws1.cell(row=current_row, column=1, value=f"{prefix}{tc_counter:03d}")
+            ws1.cell(row=current_row, column=2, value=tc.scenario)
+            ws1.cell(row=current_row, column=3, value=tc.case_type)
+            ws1.cell(row=current_row, column=4, value=tc.precondition)
+            ws1.cell(row=current_row, column=5, value=tc.steps)
+            ws1.cell(row=current_row, column=6, value=tc.expected)
+            ws1.cell(row=current_row, column=7, value="")
+            ws1.cell(row=current_row, column=8, value="")
+            style_body(ws1, current_row, len(headers))
+            current_row += 1
+            tc_counter += 1
+
+    add_casetype_validation(ws1, f"C2:C{current_row - 1}")
+    apply_conditional_fmt(ws1, f"C2:C{current_row - 1}")
+
+    def _kw(*keywords):
+        return sum(1 for tc in test_cases if any(kw.lower() in tc.scenario.lower() for kw in keywords))
+
+    summary_rows = [
+        ("TOTAL TEST CASES", len(test_cases)),
+        ("", ""),
+        ("  Positive",  sum(1 for tc in test_cases if tc.case_type == "Positive")),
+        ("  Negative",  sum(1 for tc in test_cases if tc.case_type == "Negative")),
+        ("  Boundary",  sum(1 for tc in test_cases if tc.case_type == "Boundary")),
+        ("", ""),
+        ("FORM/UI COMPONENT VALIDATION", ""),
+        *[(f"  {area} Component Tests", len(cases)) for area, cases in grouped.items()],
+        ("", ""),
+        ("NON-FUNCTIONAL TESTING (ESTIMATED)", ""),
+        ("  Accessibility (WCAG 2.1 AA)",  _kw("Accessibility", "WCAG", "Contrast")),
+        ("  Cross-Browser Compatibility",  _kw("Browser", "Chrome", "Safari")),
+        ("  Mobile Responsive Layout",     _kw("Mobile", "Responsive", "Viewport")),
+        ("  Performance & Latency",        _kw("Performance", "Slow 3G", "Timeout")),
+        ("  Security & Sanitization",      _kw("Security", "XSS", "Injection")),
+        ("", ""),
+        ("TEST PLAN LANGUAGE", "English"),
+        ("GENERATION ENGINE", f"{model_name} (Himagent AI)"),
+    ]
+    build_summary_sheet(wb, sheet1_title, summary_rows)
+
+    return current_row - 2, ordered_cases
 
 
 # ── Conditional Formatting ────────────────────────────────────────────────────
